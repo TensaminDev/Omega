@@ -25,9 +25,9 @@ pub fn get_public_key() -> x448::PublicKey {
 async fn main() {
     dotenv().ok();
     startup();
-    log!("Started");
     log_in!("Incoming messages");
     log_out!("Outgoing messages");
+    log!("Started");
     log!("  .env");
     if let Err(e) = initialize_db().await {
         log!("[FATAL] Database initialization failed: {}", e);
@@ -35,9 +35,14 @@ async fn main() {
             "[FATAL] Please ensure the database is running and the .env file is configured correctly."
         );
         return;
+    } else {
+        log!("  DB");
     }
-    let _ = print_users().await;
-    log!("  DB");
+    if let Err(e) = print_users().await {
+        log!("[ERROR] Failed to print users: {}", e);
+    } else {
+        log!("  Users");
+    }
     server::server::start(9187).await;
     log!("  Server");
     loop {}

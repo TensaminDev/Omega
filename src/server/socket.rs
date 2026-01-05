@@ -35,6 +35,11 @@ pub fn handle(
                                 .clone()
                                 .handle_message(text.to_string())
                                 .await;
+                        } else if msg.is_ping() {
+                            let pong_response = crate::data::communication::CommunicationValue::new(
+                                crate::data::communication::CommunicationType::pong,
+                            );
+                            community_conn.send_message(&pong_response).await;
                         } else if msg.is_close() {
                             log!("Closing: {}", msg);
                             community_conn.handle_close().await;

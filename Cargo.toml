@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 aes-gcm = "*"
+ansi_term = "0.12.1"
 async-tungstenite = { version = "0.32.0", features = ["futures-03-sink", "futures-util", "handshake", "__rustls-tls", "async-native-tls", "async-std", "async-std-runtime", "async-tls", "gio", "gio-runtime", "glib", "openssl", "real-async-native-tls", "real-async-tls", "real-native-tls", "real-tokio-native-tls", "real-tokio-openssl", "real-tokio-rustls", "rustls-native-certs", "rustls-pki-types", "tokio", "tokio-native-tls", "tokio-openssl", "tokio-runtime", "tokio-rustls-manual-roots", "tokio-rustls-native-certs", "tokio-rustls-webpki-roots", "url", "verbose-logging", "webpki-roots" ] }
 axum = "0.8.7"
 base64 = "0.22.1"

@@ -65,19 +65,17 @@ pub async fn handle(
                         let id = path_parts[3].parse::<i64>().unwrap_or(0);
                         if id == 0 {
                             not_found()
-                        } else if let Ok((omikron_id, public_key, ip_address)) =
-                            get_omikron_by_id(id).await
-                        {
+                        } else if let Ok((public_key, ip_address)) = get_omikron_by_id(id).await {
                             (
                                 StatusCode::OK,
                                 "application/json",
                                 format!(
                                     "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
-                                    omikron_id, public_key, ip_address
+                                    id, public_key, ip_address
                                 ),
                             )
                         } else if let Some(omikron_id) = get_omikron_for_iota(id).await {
-                            if let Ok((omikron_id, public_key, ip_address)) =
+                            if let Ok((public_key, ip_address)) =
                                 get_omikron_by_id(omikron_id).await
                             {
                                 (
@@ -95,7 +93,7 @@ pub async fn handle(
                             get_by_id(id).await
                         {
                             if let Some(omikron_id) = get_omikron_for_iota(iota_id).await {
-                                if let Ok((omikron_id, public_key, ip_address)) =
+                                if let Ok((public_key, ip_address)) =
                                     get_omikron_by_id(omikron_id).await
                                 {
                                     (

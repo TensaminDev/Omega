@@ -464,10 +464,19 @@ pub async fn start_omikron_handler(connection: Arc<OmikronConnection>) {
                     conn_clone.handle_message(text.to_string()).await;
                 });
             }
+            Message::Ping(_) => {
+                let pong_response = crate::data::communication::CommunicationValue::new(
+                    crate::data::communication::CommunicationType::pong,
+                );
+                let conn_clone = connection.clone();
+                tokio::spawn(async move {
+                    conn_clone.send_message(&pong_response).await;
+                });
+            }
             Message::Close(_) => {
                 break;
             }
-            // Other message types like Binary, Ping, Pong are ignored.
+            // Other message types like Binary, Pong are ignored.
             _ => {}
         }
     }

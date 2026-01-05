@@ -6,22 +6,37 @@ use std::{
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use ansi_term::Color;
+
 static LOGGER: OnceLock<mpsc::Sender<LogMessage>> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+pub enum PrintType {
+    Call,
+    Client,
+    Iota,
+    Omikron,
+    Omega,
+    General,
+}
 
 struct LogMessage {
     timestamp_ms: u128,
     sender: Option<i64>,
+    prefix: &'static str,
+    kind: PrintType,
+    is_error: bool,
     message: String,
 }
 
-/// Initialize logger (call once)
+/// Initialize the logging subsystem.
+/// Must be called exactly once during startup.
 pub fn startup() {
     let (tx, rx) = mpsc::channel::<LogMessage>();
-
     LOGGER.set(tx).expect("Logger already initialized");
 
     thread::spawn(move || {
-        // Prepare log directory
         let log_dir = Path::new("logs");
         fs::create_dir_all(log_dir).expect("Failed to create log directory");
 
@@ -31,42 +46,65 @@ pub fn startup() {
             .as_secs();
 
         let path = log_dir.join(format!("log_{}.txt", start_ts));
-
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .expect("Failed to open log file");
 
-        // Dedicated logging loop
         for msg in rx {
-            let timestamp_box = fixed_box(&msg.timestamp_ms.to_string(), 13);
-
-            let sender_box = match msg.sender {
-                Some(id) => fixed_box(&format!("{}", id), 19),
+            let ts = fixed_box(&msg.timestamp_ms.to_string(), 13);
+            let sender = match msg.sender {
+                Some(id) => fixed_box(&id.to_string(), 19),
                 None => fixed_box("", 19),
             };
 
-            let line = format!("{} {} {}", timestamp_box, sender_box, msg.message);
+            let line = format!("{} {} {} {}", ts, sender, msg.prefix, msg.message);
 
-            println!("{}", line);
+            // Console (ANSI-colored)
+            println!("{}", colorize(msg.kind, msg.is_error).paint(&line));
+
+            // File (plain text)
             let _ = writeln!(file, "{}", line);
         }
     });
 }
+
+fn colorize(kind: PrintType, is_error: bool) -> Color {
+    if is_error {
+        return Color::Red;
+    }
+
+    match kind {
+        PrintType::Call => Color::Purple,
+        PrintType::Client => Color::Green,
+        PrintType::Iota => Color::Yellow,
+        PrintType::Omikron => Color::Blue,
+        PrintType::Omega => Color::Cyan,
+        PrintType::General => Color::White,
+    }
+}
+
 fn fixed_box(content: &str, width: usize) -> String {
-    let s = content.chars().take(width).collect::<String>();
+    let s: String = content.chars().take(width).collect();
     let len = s.chars().count();
     if len < width {
-        let mut a = " ".repeat(width - len);
-        a.push_str(&s);
-        format!("[{}]", a)
+        format!("[{}{}]", " ".repeat(width - len), s)
     } else {
         s
     }
 }
-/// Internal function (sync + async safe)
-pub fn log_internal(sender: Option<i64>, message: String) {
+
+/** Internal async logging entry point.
+* Not exposed publicly; all access goes through macros.
+*/
+pub fn log_internal(
+    sender: Option<i64>,
+    kind: PrintType,
+    prefix: &'static str,
+    is_error: bool,
+    message: String,
+) {
     if let Some(tx) = LOGGER.get() {
         let _ = tx.send(LogMessage {
             timestamp_ms: SystemTime::now()
@@ -74,62 +112,108 @@ pub fn log_internal(sender: Option<i64>, message: String) {
                 .unwrap()
                 .as_millis(),
             sender,
+            prefix,
+            kind,
+            is_error,
             message,
         });
-    } else {
-        println!("{}", message);
     }
 }
-
+/// Log a general informational message.
 #[macro_export]
 macro_rules! log {
+    // plain
     ($($arg:tt)*) => {
-        $crate::util::logger::log_internal(None, format!($($arg)*))
+        $crate::util::logger::log_internal(
+            None,
+            $crate::util::logger::PrintType::General,
+            "",
+            false,
+            format!($($arg)*)
+        )
     };
-}
 
-#[macro_export]
-macro_rules! log_from {
-    ($sender:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(Some($sender), format!($($arg)*))
+    // sender + actor
+    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(Some($sender), $kind, "", false, format!($($arg)*))
+    };
+
+    // actor only
+    ($kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(None, $kind, "", false, format!($($arg)*))
     };
 }
+/// Log an inbound message (`>`).
 #[macro_export]
 macro_rules! log_in {
+    // sender + actor
+    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(Some($sender), $kind, ">", false, format!($($arg)*))
+    };
+
+    // actor only
+    ($kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(None, $kind, ">", false, format!($($arg)*))
+    };
+
+    // plain
     ($($arg:tt)*) => {
         $crate::util::logger::log_internal(
             None,
-            format!("> {}", format!($($arg)*))
+            $crate::util::logger::PrintType::General,
+            ">",
+            false,
+            format!($($arg)*)
         )
     };
 }
-
+/// Log an outbound message (`<`).
 #[macro_export]
 macro_rules! log_out {
+
+    // sender + actor
+    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(Some($sender), $kind, "<", false, format!($($arg)*))
+    };
+
+    // actor only
+    ($kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(None, $kind, "<", false, format!($($arg)*))
+    };
+
+    // plain
     ($($arg:tt)*) => {
         $crate::util::logger::log_internal(
             None,
-            format!("< {}", format!($($arg)*))
+            $crate::util::logger::PrintType::General,
+            "<",
+            false,
+            format!($($arg)*)
         )
     };
 }
-
+/// Log an error message (`>>`).
 #[macro_export]
-macro_rules! log_in_from {
-    ($sender:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(
-            Some($sender),
-            format!("> {}", format!($($arg)*))
-        )
+macro_rules! log_err {
+
+    // sender + actor
+    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(Some($sender), $kind, ">>", true, format!($($arg)*))
     };
-}
 
-#[macro_export]
-macro_rules! log_out_from {
-    ($sender:expr, $($arg:tt)*) => {
+    // actor only
+    ($kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(None, $kind, ">>", true, format!($($arg)*))
+    };
+
+    // plain
+    ($($arg:tt)*) => {
         $crate::util::logger::log_internal(
-            Some($sender),
-            format!("< {}", format!($($arg)*))
+            None,
+            $crate::util::logger::PrintType::General,
+            ">>",
+            true,
+            format!($($arg)*)
         )
     };
 }
