@@ -20,3 +20,8 @@ pub async fn untrack_iota(iota: i64) {
     let mut c = IOTA_OMIKRON_MAP.write().await;
     c.remove(&iota);
 }
+
+pub async fn untrack_by_omikron(omikron: i64) {
+    let mut c = IOTA_OMIKRON_MAP.write().await;
+    c.retain(|_, v| *v != omikron);
+}

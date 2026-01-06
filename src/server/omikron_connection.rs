@@ -1,5 +1,11 @@
 use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
+use crate::sql::iota_omikron_tracker::{
+    track_iota_omikron, untrack_by_omikron as untrack_iota_by_omikron, untrack_iota,
+};
 use crate::sql::sql::get_omikron_by_id;
+use crate::sql::user_online_tracker::{
+    track_user_omikron, untrack_by_omikron as untrack_user_by_omikron, untrack_user,
+};
 use crate::util::crypto_helper::encrypt;
 use crate::util::logger::PrintType;
 use crate::{get_private_key, log_out};
@@ -204,6 +210,53 @@ impl OmikronConnection {
             self.close().await;
             return;
         }
+
+        let omikron_id = self.get_user_id().await;
+        if cv.is_type(CommunicationType::user_connected) {
+            if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
+                track_user_omikron(user_id, omikron_id).await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::user_disconnected) {
+            if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
+                untrack_user(user_id).await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::iota_connected) {
+            if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
+                track_iota_omikron(iota_id, omikron_id).await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::iota_disconnected) {
+            if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
+                untrack_iota(iota_id).await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::sync_client_iota_status) {
+            if let Some(json::JsonValue::Array(user_ids)) =
+                cv.get_data(DataTypes::user_ids).cloned()
+            {
+                for user_id_json in user_ids {
+                    if let Some(user_id) = user_id_json.as_i64() {
+                        track_user_omikron(user_id, omikron_id).await;
+                    }
+                }
+            }
+            if let Some(json::JsonValue::Array(iota_ids)) =
+                cv.get_data(DataTypes::iota_ids).cloned()
+            {
+                for iota_id_json in iota_ids {
+                    if let Some(iota_id) = iota_id_json.as_i64() {
+                        track_iota_omikron(iota_id, omikron_id).await;
+                    }
+                }
+            }
+            return;
+        }
     }
 
     async fn send_error_response(&self, message_id: &Uuid, error_type: CommunicationType) {
@@ -216,7 +269,11 @@ impl OmikronConnection {
     }
     pub async fn handle_close(self: Arc<Self>) {
         if self.is_identified().await {
-            if self.get_user_id().await != 0 {}
+            let omikron_id = self.get_user_id().await;
+            if omikron_id != 0 {
+                untrack_iota_by_omikron(omikron_id).await;
+                untrack_user_by_omikron(omikron_id).await;
+            }
         }
     }
 
