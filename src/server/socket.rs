@@ -1,63 +1,70 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use futures::stream::SplitSink;
-use futures::stream::SplitStream;
-use hyper::upgrade::Upgraded;
+use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
+use tokio_tungstenite::WebSocketStream;
 use tungstenite::Message;
 
 use crate::log;
 use crate::server::omikron_connection::OmikronConnection;
 
-pub fn handle(
-    path: String,
-    writer: SplitSink<tokio_tungstenite::WebSocketStream<TokioIo<Upgraded>>, Message>,
-    reader: SplitStream<tokio_tungstenite::WebSocketStream<TokioIo<Upgraded>>>,
-) {
-    log!("handling");
+pub fn handle(path: String, upgrades: OnUpgrade) {
     tokio::spawn(async move {
-        if path.starts_with("/ws/phi/") {
-        } else if path.starts_with("/ws/omikron/") {
-            let community_conn: Arc<OmikronConnection> =
-                Arc::from(OmikronConnection::new(writer, reader));
-            loop {
-                let msg_result: Option<Result<_, _>> = {
-                    let mut session_lock = community_conn.receiver.write().await;
-                    session_lock.next().await
-                };
+        match upgrades.await {
+            Ok(upgraded_stream) => {
+                log!("Valid WebSocket upgrade");
+                let raw_stream = TokioIo::new(upgraded_stream);
 
-                match msg_result {
-                    Some(Ok(msg)) => {
-                        if msg.is_text() {
-                            let text = msg.into_text().unwrap();
-                            community_conn
-                                .clone()
-                                .handle_message(text.to_string())
-                                .await;
-                        } else if msg.is_ping() {
-                            let pong_response = crate::data::communication::CommunicationValue::new(
-                                crate::data::communication::CommunicationType::pong,
-                            );
-                            community_conn.send_message(&pong_response).await;
-                        } else if msg.is_close() {
-                            log!("Closing: {}", msg);
-                            community_conn.handle_close().await;
-                            return;
-                        }
-                    }
-                    Some(Err(e)) => {
-                        log!("Closing ERR: {}", e);
-                        community_conn.handle_close().await;
-                        return;
-                    }
-                    None => {
-                        log!("Closed Session me!");
-                        community_conn.handle_close().await;
-                        return;
-                    }
+                let ws_stream = WebSocketStream::from_raw_socket(
+                    raw_stream,
+                    tungstenite::protocol::Role::Server,
+                    None,
+                )
+                .await;
+                log!(
+                    "WebSocket handshake successful, handling connection for {}",
+                    path
+                );
+
+                let (writer, reader) = ws_stream.split();
+                if path == "/ws/omikron" {
+                    let connection = OmikronConnection::new(writer, reader);
+                    start_connecteable_handler(connection).await;
                 }
+            }
+            Err(e) => {
+                log!("WebSocket upgrade failed after response: {:?}", e);
             }
         }
     });
+}
+pub async fn start_connecteable_handler(connection: Arc<OmikronConnection>) {
+    loop {
+        let msg = match {
+            let mut receiver = connection.receiver.write().await;
+            receiver.next().await
+        } {
+            Some(Ok(msg)) => msg,
+            Some(Err(e)) => {
+                log!("WS Error: {}", e);
+                break;
+            }
+            _ => break,
+        };
+
+        match msg {
+            Message::Text(text) => {
+                let conn_clone = connection.clone();
+                tokio::spawn(async move {
+                    conn_clone.handle_message(text.to_string()).await;
+                });
+            }
+            Message::Close(_) => {
+                break;
+            }
+            _ => {}
+        }
+    }
+    connection.handle_close().await;
 }

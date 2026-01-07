@@ -1,13 +1,10 @@
-use crate::{get_public_key, log};
+use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
+use crate::get_public_key;
+use crate::sql::sql;
 use crate::{
     sql::{
-        iota_omikron_tracker::{get_omikron_for_iota, track_iota_omikron, untrack_iota},
-        sql::{
-            change_about, change_avatar, change_display_name, change_iota_id, change_iota_key,
-            change_keys, change_status, change_username, get_by_id, get_by_username,
-            get_iota_by_id, get_omikron_by_id, get_random_omikron, get_register_id,
-            register_complete_iota, register_complete_user,
-        },
+        iota_omikron_tracker::get_omikron_for_iota,
+        sql::{get_by_user_id, get_omikron_by_id, get_random_omikron},
     },
     util::crypto_helper::public_key_to_base64,
 };
@@ -16,6 +13,7 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{HeaderMap, Response as HttpResponse, StatusCode};
 use json::JsonValue;
+use json::number::Number;
 
 pub async fn handle(
     path: &str,
@@ -37,11 +35,6 @@ pub async fn handle(
     //   get/
     //     omikron/
     //     id/
-    //   register/
-    //     innit/
-    //     complete
-    log!("{}", path);
-    log!("{:?} .len = {}", path_parts, path_parts.len());
     let (status, content, body_text) = if path_parts.len() >= 2 {
         match path_parts[1] {
             "get" => match path_parts[2] {
@@ -90,7 +83,7 @@ pub async fn handle(
                                 not_found()
                             }
                         } else if let Ok((_, iota_id, _, _, _, _, _, _, _, _, _, _)) =
-                            get_by_id(id).await
+                            get_by_user_id(id).await
                         {
                             if let Some(omikron_id) = get_omikron_for_iota(iota_id).await {
                                 if let Ok((public_key, ip_address)) =
@@ -119,14 +112,131 @@ pub async fn handle(
                 }
                 // get/id/<username>
                 "id" => {
-                    let username = path_parts[3];
-                    bad_request()
+                    let username = path_parts[2];
+                    if username.is_empty() {
+                        not_found()
+                    } else {
+                        if let Ok((
+                            id,
+                            iota_id,
+                            username,
+                            display,
+                            status,
+                            about,
+                            avatar,
+                            sub_level,
+                            sub_end,
+                            public_key,
+                            _,
+                            _,
+                        )) = sql::get_by_username(username).await
+                        {
+                            (
+                                StatusCode::OK,
+                                "application/json",
+                                CommunicationValue::new(CommunicationType::success)
+                                    .add_data_str(DataTypes::username, username)
+                                    .add_data_str(DataTypes::public_key, public_key)
+                                    .add_data(
+                                        DataTypes::user_id,
+                                        JsonValue::Number(Number::from(id)),
+                                    )
+                                    .add_data(
+                                        DataTypes::iota_id,
+                                        JsonValue::Number(Number::from(iota_id)),
+                                    )
+                                    .add_data_str(DataTypes::display, display)
+                                    .add_data_str(DataTypes::status, status)
+                                    .add_data_str(DataTypes::about, about)
+                                    .add_data_str(DataTypes::avatar, avatar)
+                                    .add_data(
+                                        DataTypes::sub_level,
+                                        JsonValue::Number(Number::from(sub_level)),
+                                    )
+                                    .add_data(
+                                        DataTypes::sub_end,
+                                        JsonValue::Number(Number::from(sub_end)),
+                                    )
+                                    .to_json()
+                                    .to_string(),
+                            )
+                        } else {
+                            (
+                                StatusCode::OK,
+                                "application/json",
+                                CommunicationValue::new(CommunicationType::error_not_found)
+                                    .to_json()
+                                    .to_string(),
+                            )
+                        }
+                    }
                 }
                 "public_key" => (
                     StatusCode::OK,
                     "application/json",
                     public_key_to_base64(&get_public_key()),
                 ),
+                "user" => {
+                    let id = path_parts[2];
+                    let id: i64 = id.parse().unwrap_or(0);
+                    if id == 0 {
+                        bad_request()
+                    } else {
+                        if let Ok((
+                            id,
+                            iota_id,
+                            username,
+                            display,
+                            status,
+                            about,
+                            avatar,
+                            sub_level,
+                            sub_end,
+                            public_key,
+                            _,
+                            _,
+                        )) = sql::get_by_user_id(id).await
+                        {
+                            (
+                                StatusCode::OK,
+                                "application/json",
+                                CommunicationValue::new(CommunicationType::success)
+                                    .add_data_str(DataTypes::username, username)
+                                    .add_data_str(DataTypes::public_key, public_key)
+                                    .add_data(
+                                        DataTypes::user_id,
+                                        JsonValue::Number(Number::from(id)),
+                                    )
+                                    .add_data(
+                                        DataTypes::iota_id,
+                                        JsonValue::Number(Number::from(iota_id)),
+                                    )
+                                    .add_data_str(DataTypes::display, display)
+                                    .add_data_str(DataTypes::status, status)
+                                    .add_data_str(DataTypes::about, about)
+                                    .add_data_str(DataTypes::avatar, avatar)
+                                    .add_data(
+                                        DataTypes::sub_level,
+                                        JsonValue::Number(Number::from(sub_level)),
+                                    )
+                                    .add_data(
+                                        DataTypes::sub_end,
+                                        JsonValue::Number(Number::from(sub_end)),
+                                    )
+                                    .to_json()
+                                    .to_string(),
+                            )
+                        } else {
+                            (
+                                StatusCode::OK,
+                                "application/json",
+                                CommunicationValue::new(CommunicationType::error_not_found)
+                                    .to_json()
+                                    .to_string(),
+                            )
+                        }
+                    }
+                }
                 _ => {
                     let id = path_parts[2];
                     let id: i64 = id.parse().unwrap_or(0);

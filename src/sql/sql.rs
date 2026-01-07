@@ -202,11 +202,11 @@ pub async fn get_by_username(
                 String::from_utf8_lossy(&token).to_string(),
             ))
         }
-        None => Err(sqlx::Error::RowNotFound),
+        _ => Err(sqlx::Error::RowNotFound),
     }
 }
 
-pub async fn get_by_id(
+pub async fn get_by_user_id(
     id: i64,
 ) -> Result<
     (
@@ -265,8 +265,71 @@ pub async fn get_by_id(
                 String::from_utf8_lossy(&token).to_string(),
             ))
         }
-        None => Err(sqlx::Error::RowNotFound),
+        _ => Err(sqlx::Error::RowNotFound),
     }
+}
+
+pub async fn get_users_by_iota_id(
+    iota_id_param: i64,
+) -> Result<
+    Vec<(
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i32,
+        i64,
+        String,
+        String,
+        String,
+    )>,
+    sqlx::Error,
+> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    let rows = sqlx::query(
+        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE iota_id = ?",
+    )
+    .bind(iota_id_param)
+    .fetch_all(pool)
+    .await?;
+
+    let mut users = Vec::new();
+    for row in rows {
+        let id: i64 = row.get("id");
+        let iota_id: i64 = row.get("iota_id");
+        let username: String = row.get("username");
+        let display: Vec<u8> = row.get("display");
+        let status: Vec<u8> = row.get("status");
+        let about: Vec<u8> = row.get("about");
+        let avatar: Vec<u8> = row.get("avatar");
+        let sub_level: i32 = row.get("sub_level");
+        let sub_end: i64 = row.get("sub_end");
+        let public_key: String = row.get("public_key");
+        let private_key_hash: String = row.get("private_key_hash");
+        let token: Vec<u8> = row.get("token");
+
+        users.push((
+            id,
+            iota_id,
+            username,
+            String::from_utf8_lossy(&display).to_string(),
+            String::from_utf8_lossy(&status).to_string(),
+            String::from_utf8_lossy(&about).to_string(),
+            String::from_utf8_lossy(&avatar).to_string(),
+            sub_level,
+            sub_end,
+            public_key,
+            private_key_hash,
+            String::from_utf8_lossy(&token).to_string(),
+        ));
+    }
+
+    Ok(users)
 }
 
 pub async fn change_username(id: i64, new_username: String) -> Result<(), sqlx::Error> {
@@ -514,7 +577,7 @@ pub async fn get_random_omikron() -> Result<(i64, String, String), sqlx::Error> 
             String::from_utf8_lossy(&public_key).to_string(),
             String::from_utf8_lossy(&ip_address).to_string(),
         )),
-        None => Err(sqlx::Error::RowNotFound),
+        _ => Err(sqlx::Error::RowNotFound),
     }
 }
 
@@ -534,7 +597,7 @@ pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error>
             String::from_utf8_lossy(&public_key).to_string(),
             String::from_utf8_lossy(&ip_address).to_string(),
         )),
-        None => Err(sqlx::Error::RowNotFound),
+        _ => Err(sqlx::Error::RowNotFound),
     }
 }
 

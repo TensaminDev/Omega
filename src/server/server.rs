@@ -1,12 +1,11 @@
 use crate::log;
 use crate::server::api;
-use crate::server::omikron_connection::OmikronConnection;
+use crate::server::socket;
 use crate::util::file_util::load_file_buf;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
-use futures::StreamExt;
 use futures_util::TryFutureExt;
 use http_body_util::BodyExt;
 use http_body_util::Full;
@@ -30,9 +29,8 @@ use std::{future::Future, pin::Pin, time::Duration};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_rustls::TlsAcceptor;
-use tokio_tungstenite::{WebSocketStream, accept_async};
 use tower::Service;
-use tungstenite::Message;
+
 #[derive(Clone)]
 struct HttpService {
     peer_addr: SocketAddr,
@@ -60,7 +58,7 @@ impl Service<HttpRequest<Incoming>> for HttpService {
         let headers = parts.headers.clone();
 
         let fut = async move {
-            let is_websocket_upgrade = path == "/ws/omikron"
+            let is_websocket_upgrade = path == "/ws"
                 && method == Method::GET
                 && headers
                     .get("connection")
@@ -94,39 +92,7 @@ impl Service<HttpRequest<Incoming>> for HttpService {
                     let upgrades = upgrade::on(req_for_upgrade);
                     log!("Handling WebSocket upgrade");
 
-                    // Spawn upgrade handling to avoid blocking the service call
-                    tokio::spawn(async move {
-                        match upgrades.await {
-                            Ok(upgraded_stream) => {
-                                log!("Valid WebSocket upgrade");
-                                let raw_stream = TokioIo::new(upgraded_stream);
-
-                                let ws_stream = WebSocketStream::from_raw_socket(
-                                    raw_stream,
-                                    tungstenite::protocol::Role::Server,
-                                    None,
-                                )
-                                .await;
-                                log!(
-                                    "WebSocket handshake successful, handling connection for Omikron"
-                                );
-
-                                // Split stream for OmikronConnection
-                                let (writer, reader) = ws_stream.split();
-
-                                // INTEGRATION START
-                                // Erstelle die Connection und starte den Handler
-                                let connection = OmikronConnection::new(writer, reader);
-
-                                // Handler in separatem Task starten
-                                start_omikron_handler(connection).await;
-                                // INTEGRATION END
-                            }
-                            Err(e) => {
-                                log!("WebSocket upgrade failed after response: {:?}", e);
-                            }
-                        }
-                    });
+                    socket::handle(path, upgrades);
 
                     log!("Handled WebSocket connection initiation");
                     Ok(response)
@@ -192,7 +158,6 @@ async fn run_http_server(port: u16) -> bool {
         port
     );
 
-    // Create a broadcast channel for graceful shutdown signal
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     tokio::spawn(async move {
@@ -205,7 +170,6 @@ async fn run_http_server(port: u16) -> bool {
                             let service = HttpService { peer_addr: addr };
                             let io = TokioIo::new(stream);
 
-                            // Subscribe to the shutdown signal for this specific connection
                             let mut rx = shutdown_tx.subscribe();
 
                             tokio::spawn(async move {
@@ -216,7 +180,6 @@ async fn run_http_server(port: u16) -> bool {
                                     .serve_connection(io, TowerToHyperService::new(service))
                                     .with_upgrades();
 
-                                // Wait for either the connection to finish naturally OR the shutdown signal
                                 tokio::select! {
                                     res = conn => {
                                         if let Err(err) = res {
@@ -276,13 +239,11 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
         port
     );
 
-    // Create a broadcast channel for graceful shutdown signal
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                // Monitor for shutdown signal
                 _ = async {
                     loop {
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -294,7 +255,6 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
                     break;
                 }
 
-                // Accept new connections
                 accepted = listener.accept() => {
                     match accepted {
                         std::result::Result::Ok((stream, addr)) => {
@@ -317,14 +277,12 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
                                 };
                                 let io = TokioIo::new(tls_stream);
 
-                                // Prepare connection future
                                 let conn = http1::Builder::new()
                                     .preserve_header_case(true)
                                     .title_case_headers(true)
                                     .serve_connection(io, TowerToHyperService::new(service))
                                     .with_upgrades();
 
-                                // Wait for either the connection to finish naturally OR the shutdown signal
                                 tokio::select! {
                                     res = conn => {
                                         if let Err(err) = res {
@@ -363,7 +321,7 @@ pub async fn start(port: u16) -> bool {
 
     match tls_result {
         Ok(Some(tls_config)) => run_tls_server(port, tls_config).await,
-        Ok(None) => run_http_server(port).await,
+        Ok(_) => run_http_server(port).await,
         Err(e) => {
             log!("Fatal error during TLS config load: {}", e);
             false
@@ -376,7 +334,7 @@ fn calculate_accept_key(key: &str) -> String {
     sha1.update(key.as_bytes());
     sha1.update(websocket_guid.as_bytes());
     let result = sha1.finalize();
-    STANDARD.encode(result) // Base64 encode the result
+    STANDARD.encode(result)
 }
 
 /// Loads TLS config. Returns Ok(None) if cert files are not found, and an error if parsing fails.
@@ -391,7 +349,7 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
             log!("TLS certificate 'certs/cert.pem' not found.");
             return Ok(None);
         }
-        Err(e) => return Err(e.into()), // Other IO error
+        Err(e) => return Err(e.into()),
     };
 
     let key_file_buf = match key_file_res {
@@ -400,7 +358,7 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
             log!("TLS key 'certs/cert.key' not found.");
             return Ok(None);
         }
-        Err(e) => return Err(e.into()), // Other IO error
+        Err(e) => return Err(e.into()),
     };
 
     // Continue with configuration if both files were found
@@ -411,12 +369,12 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
     // PKCS8
     let mut key_reader = BufReader::new(key_file_buf);
     let mut key_ders = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
-        .map(|r| r.map(Into::into)) // Explicit conversion
+        .map(|r| r.map(Into::into))
         .collect::<Result<Vec<PrivateKeyDer>, io::Error>>()?;
 
     if key_ders.is_empty() {
         // RSA
-        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?); // Re-read key file
+        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?);
         key_ders = rustls_pemfile::rsa_private_keys(&mut key_reader)
             .map(|r| r.map(Into::into))
             .collect::<Result<Vec<PrivateKeyDer>, io::Error>>()?;
@@ -424,14 +382,14 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
 
     if key_ders.is_empty() {
         // EC
-        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?); // Re-read key file
+        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?);
         key_ders = rustls_pemfile::ec_private_keys(&mut key_reader)
             .map(|r| r.map(Into::into))
             .collect::<Result<Vec<PrivateKeyDer>, io::Error>>()?;
     }
 
     if key_ders.is_empty() {
-        return Err("No private keys found in key file. (Tried PKCS8, RSA, and EC)".into());
+        return Err("No valid private keys found in key file (Tried PKCS8, RSA and EC).".into());
     }
 
     let config = rustls::ServerConfig::builder()
@@ -440,45 +398,4 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
         .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
 
     Ok(Some(Arc::new(config)))
-}
-// In deiner Server-Logik, wo OmikronConnection initialisiert wird:
-
-pub async fn start_omikron_handler(connection: Arc<OmikronConnection>) {
-    loop {
-        let msg = match {
-            let mut receiver = connection.receiver.write().await;
-            receiver.next().await
-        } {
-            Some(Ok(msg)) => msg,
-            Some(Err(e)) => {
-                log!("WS Error: {}", e);
-                break;
-            }
-            None => break, // Stream ended
-        };
-
-        match msg {
-            Message::Text(text) => {
-                let conn_clone = connection.clone();
-                tokio::spawn(async move {
-                    conn_clone.handle_message(text.to_string()).await;
-                });
-            }
-            Message::Ping(_) => {
-                let pong_response = crate::data::communication::CommunicationValue::new(
-                    crate::data::communication::CommunicationType::pong,
-                );
-                let conn_clone = connection.clone();
-                tokio::spawn(async move {
-                    conn_clone.send_message(&pong_response).await;
-                });
-            }
-            Message::Close(_) => {
-                break;
-            }
-            // Other message types like Binary, Pong are ignored.
-            _ => {}
-        }
-    }
-    connection.handle_close().await;
 }
