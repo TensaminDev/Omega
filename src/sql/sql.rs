@@ -427,6 +427,18 @@ pub async fn change_keys(
 
     Ok(())
 }
+pub async fn change_token(id: i64, new_token: String) -> Result<(), sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query("UPDATE users SET token = ? WHERE id = ?")
+        .bind(new_token)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
 pub async fn register_complete_user(
     id: i64,
     username: String,
@@ -470,9 +482,6 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
         let about: Vec<u8> = row.get("about");
         let sub_level: i32 = row.get("sub_level");
         let sub_end: i64 = row.get("sub_end");
-        let public_key: String = row.get("public_key");
-        let private_key_hash: String = row.get("private_key_hash");
-        let token: Vec<u8> = row.get("token");
 
         log!(
             "User: {:?}",
@@ -484,10 +493,7 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
                 String::from_utf8_lossy(&status),
                 String::from_utf8_lossy(&about),
                 sub_level,
-                sub_end,
-                public_key,
-                private_key_hash,
-                String::from_utf8_lossy(&token)
+                sub_end
             )
         );
     }

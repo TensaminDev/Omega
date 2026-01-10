@@ -562,8 +562,270 @@ impl OmikronConnection {
 
             return;
         }
-        if cv.is_type(CommunicationType::change_user_data) {}
-        if cv.is_type(CommunicationType::change_iota_data) {}
+
+        if cv.is_type(CommunicationType::get_register) {
+            let register_id = sql::get_register_id().await;
+            let response = CommunicationValue::new(CommunicationType::get_register)
+                .with_id(cv.get_id())
+                .add_data(
+                    DataTypes::user_id,
+                    JsonValue::Number(Number::from(register_id)),
+                );
+            self.send_message(&response).await;
+            return;
+        }
+        if cv.is_type(CommunicationType::complete_register_iota) {
+            if let (Some(iota_id), Some(public_key)) = (
+                cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()),
+                cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()),
+            ) {
+                match sql::register_complete_iota(iota_id, public_key.to_string()).await {
+                    Ok(_) => {
+                        let response = CommunicationValue::new(CommunicationType::success)
+                            .with_id(cv.get_id());
+                        self.send_message(&response).await;
+                    }
+                    Err(e) => {
+                        self.send_message(
+                            &CommunicationValue::new(CommunicationType::error)
+                                .with_id(cv.get_id())
+                                .add_data_str(DataTypes::error_type, e.to_string()),
+                        )
+                        .await;
+                    }
+                }
+            } else {
+                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                    .await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::complete_register_user) {
+            if let (
+                Some(user_id),
+                Some(username),
+                Some(public_key),
+                Some(iota_id),
+                Some(reset_token),
+            ) = (
+                cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()),
+                cv.get_data(DataTypes::username).and_then(|v| v.as_str()),
+                cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()),
+                cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()),
+                cv.get_data(DataTypes::reset_token).and_then(|v| v.as_str()), // Assuming reset_token is sent as token
+            ) {
+                // The documentation does not specify a private_key_hash, using an empty string.
+                match sql::register_complete_user(
+                    user_id,
+                    username.to_string(),
+                    public_key.to_string(),
+                    "".to_string(), // private_key_hash
+                    iota_id,
+                    reset_token.to_string(),
+                )
+                .await
+                {
+                    Ok(_) => {
+                        let response = CommunicationValue::new(CommunicationType::success)
+                            .with_id(cv.get_id());
+                        self.send_message(&response).await;
+                    }
+                    Err(e) => {
+                        self.send_message(
+                            &CommunicationValue::new(CommunicationType::error)
+                                .with_id(cv.get_id())
+                                .add_data_str(DataTypes::error_type, e.to_string()),
+                        )
+                        .await;
+                    }
+                }
+            } else {
+                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                    .await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::change_user_data) {
+            if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
+                let mut success = true;
+                let mut error_message = String::new();
+
+                if let Some(username) = cv.get_data(DataTypes::username).and_then(|v| v.as_str()) {
+                    if let Err(e) = sql::change_username(user_id, username.to_string()).await {
+                        success = false;
+                        error_message = e.to_string();
+                    }
+                }
+                if let Some(display) = cv.get_data(DataTypes::display).and_then(|v| v.as_str()) {
+                    if let Err(e) = sql::change_display_name(user_id, display.to_string()).await {
+                        success = false;
+                        error_message = e.to_string();
+                    }
+                }
+                if let Some(avatar) = cv.get_data(DataTypes::avatar).and_then(|v| v.as_str()) {
+                    if let Err(e) = sql::change_avatar(user_id, avatar.to_string()).await {
+                        success = false;
+                        error_message = e.to_string();
+                    }
+                }
+                if let Some(about) = cv.get_data(DataTypes::about).and_then(|v| v.as_str()) {
+                    if let Err(e) = sql::change_about(user_id, about.to_string()).await {
+                        success = false;
+                        error_message = e.to_string();
+                    }
+                }
+                if let Some(status) = cv.get_data(DataTypes::status).and_then(|v| v.as_str()) {
+                    if let Err(e) = sql::change_status(user_id, status.to_string()).await {
+                        success = false;
+                        error_message = e.to_string();
+                    }
+                }
+                if let Some(public_key) =
+                    cv.get_data(DataTypes::public_key).and_then(|v| v.as_str())
+                {
+                    if let Some(private_key_hash) = cv
+                        .get_data(DataTypes::private_key_hash)
+                        .and_then(|v| v.as_str())
+                    {
+                        if let Err(e) = sql::change_keys(
+                            user_id,
+                            public_key.to_string(),
+                            private_key_hash.to_string(),
+                        )
+                        .await
+                        {
+                            success = false;
+                            error_message = e.to_string();
+                        }
+                    } else {
+                        success = false;
+                        error_message =
+                            "private_key_hash is required when changing public_key".to_string();
+                    }
+                }
+
+                if success {
+                    let response =
+                        CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                    self.send_message(&response).await;
+                } else {
+                    self.send_message(
+                        &CommunicationValue::new(CommunicationType::error)
+                            .with_id(cv.get_id())
+                            .add_data_str(DataTypes::error_type, error_message),
+                    )
+                    .await;
+                }
+            } else {
+                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                    .await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::change_iota_data) {
+            if let (Some(user_id), Some(iota_id), Some(reset_token), Some(new_token)) = (
+                cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()),
+                cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()),
+                cv.get_data(DataTypes::reset_token).and_then(|v| v.as_str()),
+                cv.get_data(DataTypes::new_token).and_then(|v| v.as_str()),
+            ) {
+                match sql::get_by_user_id(user_id).await {
+                    Ok(user) => {
+                        let current_token = user.11; // token is the 12th element (index 11)
+                        if current_token == reset_token {
+                            let mut success = true;
+                            let mut error_message = String::new();
+                            if let Err(e) = sql::change_iota_id(user_id, iota_id).await {
+                                success = false;
+                                error_message = e.to_string();
+                            }
+                            if success {
+                                if let Err(e) =
+                                    sql::change_token(user_id, new_token.to_string()).await
+                                {
+                                    success = false;
+                                    error_message = e.to_string();
+                                }
+                            }
+
+                            if success {
+                                let response = CommunicationValue::new(CommunicationType::success)
+                                    .with_id(cv.get_id());
+                                self.send_message(&response).await;
+                            } else {
+                                self.send_message(
+                                    &CommunicationValue::new(CommunicationType::error)
+                                        .with_id(cv.get_id())
+                                        .add_data_str(DataTypes::error_type, error_message),
+                                )
+                                .await;
+                            }
+                        } else {
+                            self.send_error_response(
+                                &cv.get_id(),
+                                // Using this for invalid token
+                                CommunicationType::error_invalid_challenge,
+                            )
+                            .await;
+                        }
+                    }
+                    Err(_) => {
+                        self.send_error_response(&cv.get_id(), CommunicationType::error_not_found)
+                            .await;
+                    }
+                }
+            } else {
+                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                    .await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::delete_user) {
+            if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
+                match sql::delete_user(user_id).await {
+                    Ok(_) => {
+                        let response = CommunicationValue::new(CommunicationType::success)
+                            .with_id(cv.get_id());
+                        self.send_message(&response).await;
+                    }
+                    Err(e) => {
+                        self.send_message(
+                            &CommunicationValue::new(CommunicationType::error)
+                                .with_id(cv.get_id())
+                                .add_data_str(DataTypes::error_type, e.to_string()),
+                        )
+                        .await;
+                    }
+                }
+            } else {
+                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                    .await;
+            }
+            return;
+        }
+        if cv.is_type(CommunicationType::delete_iota) {
+            if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
+                match sql::delete_iota(iota_id).await {
+                    Ok(_) => {
+                        let response = CommunicationValue::new(CommunicationType::success)
+                            .with_id(cv.get_id());
+                        self.send_message(&response).await;
+                    }
+                    Err(e) => {
+                        self.send_message(
+                            &CommunicationValue::new(CommunicationType::error)
+                                .with_id(cv.get_id())
+                                .add_data_str(DataTypes::error_type, e.to_string()),
+                        )
+                        .await;
+                    }
+                }
+            } else {
+                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                    .await;
+            }
+            return;
+        }
     }
 
     async fn send_error_response(&self, message_id: &Uuid, error_type: CommunicationType) {

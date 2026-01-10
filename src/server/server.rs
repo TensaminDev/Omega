@@ -58,7 +58,7 @@ impl Service<HttpRequest<Incoming>> for HttpService {
         let headers = parts.headers.clone();
 
         let fut = async move {
-            let is_websocket_upgrade = path == "/ws"
+            let is_websocket_upgrade = path.starts_with("/ws")
                 && method == Method::GET
                 && headers
                     .get("connection")
