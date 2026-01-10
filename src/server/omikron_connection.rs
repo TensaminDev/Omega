@@ -4,8 +4,7 @@ use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get
 use crate::sql::user_online_tracker::{self};
 use crate::util::crypto_helper::encrypt;
 use crate::util::logger::PrintType;
-use crate::{get_private_key, log_out};
-use crate::{get_public_key, log_in};
+use crate::{get_private_key, get_public_key, log_in, log_out};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
 use futures::SinkExt;
@@ -99,70 +98,18 @@ impl OmikronConnection {
             return;
         }
 
-        // If not yet identified
         if !self.is_identified().await {
-            // handle identification
-            if !*self.identified.read().await && cv.is_type(CommunicationType::identification) {
+            let identified = *self.identified.read().await;
+            let challenged = *self.challenged.read().await;
+
+            if !identified && cv.is_type(CommunicationType::identification) {
                 let omikron_id = cv
                     .get_data(DataTypes::omikron)
-                    .unwrap_or(&JsonValue::Null)
-                    .as_i64()
+                    .and_then(|v| v.as_i64())
                     .unwrap_or(0);
-                match get_omikron_by_id(omikron_id).await {
-                    Ok((public_key, _)) => {
-                        // Generate Challenge, encrypt it and send it to the omikron
-                        *self.omikron_id.write().await = omikron_id;
 
-                        let challenge_str: String = rand::thread_rng()
-                            .sample_iter(&Alphanumeric)
-                            .take(32)
-                            .map(char::from)
-                            .collect();
-
-                        *self.challenge.write().await = challenge_str.clone();
-
-                        let user_public_key_bytes = match STANDARD.decode(&public_key) {
-                            Ok(bytes) => bytes,
-                            Err(_) => {
-                                self.send_error_response(
-                                    &cv.get_id(),
-                                    CommunicationType::error_invalid_omikron_id,
-                                )
-                                .await;
-                                return;
-                            }
-                        };
-                        *self.pub_key.write().await = Some(user_public_key_bytes.clone());
-
-                        let omikron_pub_key: PublicKey =
-                            match PublicKey::from_bytes(&user_public_key_bytes) {
-                                Some(key) => key,
-                                _ => {
-                                    self.send_error_response(
-                                        &cv.get_id(),
-                                        CommunicationType::error_invalid_public_key,
-                                    )
-                                    .await;
-                                    return;
-                                }
-                            };
-
-                        let encrypted_challenge =
-                            encrypt(get_private_key(), omikron_pub_key, &challenge_str)
-                                .unwrap_or("".to_string());
-
-                        let response = CommunicationValue::new(CommunicationType::challenge)
-                            .add_data_str(
-                                DataTypes::public_key,
-                                STANDARD.encode(get_public_key().as_bytes()),
-                            )
-                            .add_data_str(DataTypes::challenge, encrypted_challenge)
-                            .with_id(cv.get_id());
-
-                        self.send_message(&response).await;
-                        *self.identified.write().await = true;
-                        return;
-                    }
+                let (public_key, _) = match get_omikron_by_id(omikron_id).await {
+                    Ok(v) => v,
                     Err(e) => {
                         self.send_message(
                             &CommunicationValue::new(CommunicationType::error_not_authenticated)
@@ -170,32 +117,78 @@ impl OmikronConnection {
                                 .add_data_str(DataTypes::error_type, e.to_string()),
                         )
                         .await;
-
                         return;
                     }
-                }
+                };
+
+                let pub_key_bytes = match STANDARD.decode(&public_key) {
+                    Ok(b) => b,
+                    Err(_) => {
+                        self.send_error_response(
+                            &cv.get_id(),
+                            CommunicationType::error_invalid_omikron_id,
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+                let omikron_pub_key = match PublicKey::from_bytes(&pub_key_bytes) {
+                    Some(k) => k,
+                    None => {
+                        self.send_error_response(
+                            &cv.get_id(),
+                            CommunicationType::error_invalid_public_key,
+                        )
+                        .await;
+                        return;
+                    }
+                };
+
+                let challenge: String = rand::thread_rng()
+                    .sample_iter(&Alphanumeric)
+                    .take(32)
+                    .map(char::from)
+                    .collect();
+
+                *self.omikron_id.write().await = omikron_id;
+                *self.challenge.write().await = challenge.clone();
+                *self.pub_key.write().await = Some(pub_key_bytes);
+                *self.identified.write().await = true;
+
+                let encrypted =
+                    encrypt(get_private_key(), omikron_pub_key, &challenge).unwrap_or_default();
+
+                let response = CommunicationValue::new(CommunicationType::challenge)
+                    .with_id(cv.get_id())
+                    .add_data_str(
+                        DataTypes::public_key,
+                        STANDARD.encode(get_public_key().as_bytes()),
+                    )
+                    .add_data_str(DataTypes::challenge, encrypted);
+
+                self.send_message(&response).await;
+                return;
             }
 
-            // Handle challenge response
-            if *self.identified.read().await
-                && !*self.challenged.read().await
-                && cv.is_type(CommunicationType::challenge_response)
-            {
+            // ──────────────────────────────
+            // Challenge response
+            // ──────────────────────────────
+            if identified && !challenged && cv.is_type(CommunicationType::challenge_response) {
                 let client_response = cv
                     .get_data(DataTypes::challenge)
-                    .unwrap_or(&JsonValue::Null)
-                    .as_str()
+                    .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let expected_challenge = self.challenge.read().await.clone();
 
-                if client_response == expected_challenge {
+                if client_response == *self.challenge.read().await {
                     *self.challenged.write().await = true;
-
-                    let response =
-                        CommunicationValue::new(CommunicationType::identification_response)
-                            .with_id(cv.get_id());
                     let _ = sql::set_omikron_active(self.get_omikron_id().await, true);
-                    self.send_message(&response).await;
+
+                    self.send_message(
+                        &CommunicationValue::new(CommunicationType::identification_response)
+                            .with_id(cv.get_id()),
+                    )
+                    .await;
                 } else {
                     self.send_error_response(
                         &cv.get_id(),
@@ -207,14 +200,13 @@ impl OmikronConnection {
                 return;
             }
 
-            // if not identified && not identifying
             self.send_error_response(&cv.get_id(), CommunicationType::error_not_authenticated)
                 .await;
             self.close().await;
-            return;
         }
-
         let omikron_id = self.get_omikron_id().await;
+
+        // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
                 user_online_tracker::track_user_status(user_id, ConnectionType::Online, omikron_id)
@@ -290,6 +282,8 @@ impl OmikronConnection {
             }
             return;
         }
+
+        // DATA RETURN
         if cv.is_type(CommunicationType::get_user_data) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).cloned() {
                 if let Some(user_id) = user_id.as_i64() {
@@ -563,6 +557,7 @@ impl OmikronConnection {
             return;
         }
 
+        // REGISTERING
         if cv.is_type(CommunicationType::get_register) {
             let register_id = sql::get_register_id().await;
             let response = CommunicationValue::new(CommunicationType::get_register)
@@ -645,6 +640,8 @@ impl OmikronConnection {
             }
             return;
         }
+
+        // CHANGING DATA
         if cv.is_type(CommunicationType::change_user_data) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
                 let mut success = true;
