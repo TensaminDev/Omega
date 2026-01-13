@@ -150,10 +150,10 @@ pub async fn get_by_username(
         i64,
         i64,
         String,
-        String,
-        String,
-        String,
-        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
         i32,
         i64,
         String,
@@ -177,10 +177,10 @@ pub async fn get_by_username(
             let id: i64 = row.get("id");
             let iota_id: i64 = row.get("iota_id");
             let username: String = row.get("username");
-            let display: Vec<u8> = row.get("display");
-            let status: Vec<u8> = row.get("status");
-            let about: Vec<u8> = row.get("about");
-            let avatar: Vec<u8> = row.get("avatar");
+            let display: Option<Vec<u8>> = row.get("display");
+            let status: Option<Vec<u8>> = row.get("status");
+            let about: Option<Vec<u8>> = row.get("about");
+            let avatar: Option<Vec<u8>> = row.get("avatar");
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
             let public_key: String = row.get("public_key");
@@ -191,10 +191,10 @@ pub async fn get_by_username(
                 id,
                 iota_id,
                 username,
-                String::from_utf8_lossy(&display).to_string(),
-                String::from_utf8_lossy(&status).to_string(),
-                String::from_utf8_lossy(&about).to_string(),
-                String::from_utf8_lossy(&avatar).to_string(),
+                display.map(|d| String::from_utf8_lossy(&d).to_string()),
+                status.map(|s| String::from_utf8_lossy(&s).to_string()),
+                about.map(|a| String::from_utf8_lossy(&a).to_string()),
+                avatar,
                 sub_level,
                 sub_end,
                 public_key,
@@ -213,10 +213,10 @@ pub async fn get_by_user_id(
         i64,
         i64,
         String,
-        String,
-        String,
-        String,
-        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
         i32,
         i64,
         String,
@@ -240,10 +240,10 @@ pub async fn get_by_user_id(
             let id: i64 = row.get("id");
             let iota_id: i64 = row.get("iota_id");
             let username: String = row.get("username");
-            let display: Vec<u8> = row.get("display");
-            let status: Vec<u8> = row.get("status");
-            let about: Vec<u8> = row.get("about");
-            let avatar: Vec<u8> = row.get("avatar");
+            let display: Option<Vec<u8>> = row.get("display");
+            let status: Option<Vec<u8>> = row.get("status");
+            let about: Option<Vec<u8>> = row.get("about");
+            let avatar: Option<Vec<u8>> = row.get("avatar");
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
             let public_key: String = row.get("public_key");
@@ -254,10 +254,10 @@ pub async fn get_by_user_id(
                 id,
                 iota_id,
                 username,
-                String::from_utf8_lossy(&display).to_string(),
-                String::from_utf8_lossy(&status).to_string(),
-                String::from_utf8_lossy(&about).to_string(),
-                String::from_utf8_lossy(&avatar).to_string(),
+                display.map(|d| String::from_utf8_lossy(&d).to_string()),
+                status.map(|s| String::from_utf8_lossy(&s).to_string()),
+                about.map(|a| String::from_utf8_lossy(&a).to_string()),
+                avatar,
                 sub_level,
                 sub_end,
                 public_key,
@@ -276,10 +276,10 @@ pub async fn get_users_by_iota_id(
         i64,
         i64,
         String,
-        String,
-        String,
-        String,
-        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
         i32,
         i64,
         String,
@@ -303,10 +303,10 @@ pub async fn get_users_by_iota_id(
         let id: i64 = row.get("id");
         let iota_id: i64 = row.get("iota_id");
         let username: String = row.get("username");
-        let display: Vec<u8> = row.get("display");
-        let status: Vec<u8> = row.get("status");
-        let about: Vec<u8> = row.get("about");
-        let avatar: Vec<u8> = row.get("avatar");
+        let display: Option<Vec<u8>> = row.get("display");
+        let status: Option<Vec<u8>> = row.get("status");
+        let about: Option<Vec<u8>> = row.get("about");
+        let avatar: Option<Vec<u8>> = row.get("avatar");
         let sub_level: i32 = row.get("sub_level");
         let sub_end: i64 = row.get("sub_end");
         let public_key: String = row.get("public_key");
@@ -317,10 +317,10 @@ pub async fn get_users_by_iota_id(
             id,
             iota_id,
             username,
-            String::from_utf8_lossy(&display).to_string(),
-            String::from_utf8_lossy(&status).to_string(),
-            String::from_utf8_lossy(&about).to_string(),
-            String::from_utf8_lossy(&avatar).to_string(),
+            display.map(|d| String::from_utf8_lossy(&d).to_string()),
+            status.map(|s| String::from_utf8_lossy(&s).to_string()),
+            about.map(|a| String::from_utf8_lossy(&a).to_string()),
+            avatar,
             sub_level,
             sub_end,
             public_key,
@@ -477,9 +477,9 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
         let id: i64 = row.get("id");
         let iota_id: i64 = row.get("iota_id");
         let username: String = row.get("username");
-        let display: Vec<u8> = row.get("display");
-        let status: Vec<u8> = row.get("status");
-        let about: Vec<u8> = row.get("about");
+        let display: Option<Vec<u8>> = row.get("display");
+        let status: Option<Vec<u8>> = row.get("status");
+        let about: Option<Vec<u8>> = row.get("about");
         let sub_level: i32 = row.get("sub_level");
         let sub_end: i64 = row.get("sub_end");
 
@@ -489,9 +489,9 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
                 id,
                 iota_id,
                 username,
-                String::from_utf8_lossy(&display),
-                String::from_utf8_lossy(&status),
-                String::from_utf8_lossy(&about),
+                display.map_or("".to_string(), |d| String::from_utf8_lossy(&d).to_string()),
+                status.map_or("".to_string(), |s| String::from_utf8_lossy(&s).to_string()),
+                about.map_or("".to_string(), |a| String::from_utf8_lossy(&a).to_string()),
                 sub_level,
                 sub_end
             )
@@ -504,6 +504,12 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
 // ==========================================================================================
 //                                                IOTA
 // ==========================================================================================
+pub async fn create_new_iota(public_key: String) -> Result<i64, sqlx::Error> {
+    let new_id = get_register_id().await as i64;
+    register_complete_iota(new_id, public_key).await?;
+    Ok(new_id)
+}
+
 pub async fn register_complete_iota(id: i64, public_key: String) -> Result<(), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");

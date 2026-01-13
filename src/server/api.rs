@@ -9,6 +9,7 @@ use crate::{
     util::crypto_helper::public_key_to_base64,
 };
 use axum::http::HeaderValue;
+use base64::Engine as _;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{HeaderMap, Response as HttpResponse, StatusCode};
@@ -112,29 +113,29 @@ pub async fn handle(
                 }
                 // get/id/<username>
                 "id" => {
-                    let username = path_parts[2];
-                    if username.is_empty() {
-                        not_found()
+                    if path_parts.len() != 4 {
+                        bad_request()
                     } else {
-                        if let Ok((
-                            id,
-                            iota_id,
-                            username,
-                            display,
-                            status,
-                            about,
-                            avatar,
-                            sub_level,
-                            sub_end,
-                            public_key,
-                            _,
-                            _,
-                        )) = sql::get_by_username(username).await
-                        {
-                            (
-                                StatusCode::OK,
-                                "application/json",
-                                CommunicationValue::new(CommunicationType::success)
+                        let username = path_parts[3];
+                        if username.is_empty() {
+                            not_found()
+                        } else {
+                            if let Ok((
+                                id,
+                                iota_id,
+                                username,
+                                _,
+                                _,
+                                _,
+                                _,
+                                sub_level,
+                                sub_end,
+                                public_key,
+                                _,
+                                _,
+                            )) = sql::get_by_username(username).await
+                            {
+                                let cv = CommunicationValue::new(CommunicationType::success)
                                     .add_data_str(DataTypes::username, username)
                                     .add_data_str(DataTypes::public_key, public_key)
                                     .add_data(
@@ -145,10 +146,6 @@ pub async fn handle(
                                         DataTypes::iota_id,
                                         JsonValue::Number(Number::from(iota_id)),
                                     )
-                                    .add_data_str(DataTypes::display, display)
-                                    .add_data_str(DataTypes::status, status)
-                                    .add_data_str(DataTypes::about, about)
-                                    .add_data_str(DataTypes::avatar, avatar)
                                     .add_data(
                                         DataTypes::sub_level,
                                         JsonValue::Number(Number::from(sub_level)),
@@ -156,18 +153,17 @@ pub async fn handle(
                                     .add_data(
                                         DataTypes::sub_end,
                                         JsonValue::Number(Number::from(sub_end)),
-                                    )
-                                    .to_json()
-                                    .to_string(),
-                            )
-                        } else {
-                            (
-                                StatusCode::OK,
-                                "application/json",
-                                CommunicationValue::new(CommunicationType::error_not_found)
-                                    .to_json()
-                                    .to_string(),
-                            )
+                                    );
+                                (StatusCode::OK, "application/json", cv.to_json().to_string())
+                            } else {
+                                (
+                                    StatusCode::OK,
+                                    "application/json",
+                                    CommunicationValue::new(CommunicationType::error_not_found)
+                                        .to_json()
+                                        .to_string(),
+                                )
+                            }
                         }
                     }
                 }
@@ -177,30 +173,30 @@ pub async fn handle(
                     public_key_to_base64(&get_public_key()),
                 ),
                 "user" => {
-                    let id = path_parts[2];
-                    let id: i64 = id.parse().unwrap_or(0);
-                    if id == 0 {
+                    if path_parts.len() != 4 {
                         bad_request()
                     } else {
-                        if let Ok((
-                            id,
-                            iota_id,
-                            username,
-                            display,
-                            status,
-                            about,
-                            avatar,
-                            sub_level,
-                            sub_end,
-                            public_key,
-                            _,
-                            _,
-                        )) = sql::get_by_user_id(id).await
-                        {
-                            (
-                                StatusCode::OK,
-                                "application/json",
-                                CommunicationValue::new(CommunicationType::success)
+                        let id = path_parts[3];
+                        let id: i64 = id.parse().unwrap_or(0);
+                        if id == 0 {
+                            bad_request()
+                        } else {
+                            if let Ok((
+                                id,
+                                iota_id,
+                                username,
+                                display,
+                                status,
+                                about,
+                                avatar,
+                                sub_level,
+                                sub_end,
+                                public_key,
+                                _,
+                                _,
+                            )) = sql::get_by_user_id(id).await
+                            {
+                                let mut cv = CommunicationValue::new(CommunicationType::success)
                                     .add_data_str(DataTypes::username, username)
                                     .add_data_str(DataTypes::public_key, public_key)
                                     .add_data(
@@ -211,10 +207,6 @@ pub async fn handle(
                                         DataTypes::iota_id,
                                         JsonValue::Number(Number::from(iota_id)),
                                     )
-                                    .add_data_str(DataTypes::display, display)
-                                    .add_data_str(DataTypes::status, status)
-                                    .add_data_str(DataTypes::about, about)
-                                    .add_data_str(DataTypes::avatar, avatar)
                                     .add_data(
                                         DataTypes::sub_level,
                                         JsonValue::Number(Number::from(sub_level)),
@@ -222,18 +214,32 @@ pub async fn handle(
                                     .add_data(
                                         DataTypes::sub_end,
                                         JsonValue::Number(Number::from(sub_end)),
-                                    )
-                                    .to_json()
-                                    .to_string(),
-                            )
-                        } else {
-                            (
-                                StatusCode::OK,
-                                "application/json",
-                                CommunicationValue::new(CommunicationType::error_not_found)
-                                    .to_json()
-                                    .to_string(),
-                            )
+                                    );
+                                if let Some(display) = display {
+                                    cv = cv.add_data_str(DataTypes::display, display);
+                                }
+                                if let Some(status) = status {
+                                    cv = cv.add_data_str(DataTypes::status, status);
+                                }
+                                if let Some(about) = about {
+                                    cv = cv.add_data_str(DataTypes::about, about);
+                                }
+                                if let Some(avatar) = avatar {
+                                    cv = cv.add_data_str(
+                                        DataTypes::avatar,
+                                        base64::engine::general_purpose::STANDARD.encode(avatar),
+                                    );
+                                }
+                                (StatusCode::OK, "application/json", cv.to_json().to_string())
+                            } else {
+                                (
+                                    StatusCode::OK,
+                                    "application/json",
+                                    CommunicationValue::new(CommunicationType::error_not_found)
+                                        .to_json()
+                                        .to_string(),
+                                )
+                            }
                         }
                     }
                 }

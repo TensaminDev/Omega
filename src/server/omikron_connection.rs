@@ -186,7 +186,8 @@ impl OmikronConnection {
 
                     self.send_message(
                         &CommunicationValue::new(CommunicationType::identification_response)
-                            .with_id(cv.get_id()),
+                            .with_id(cv.get_id())
+                            .add_data(DataTypes::accepted, JsonValue::Boolean(true)),
                     )
                     .await;
                 } else {
@@ -311,10 +312,6 @@ impl OmikronConnection {
                                     DataTypes::iota_id,
                                     JsonValue::Number(Number::from(iota_id)),
                                 )
-                                .add_data_str(DataTypes::display, display)
-                                .add_data_str(DataTypes::status, status)
-                                .add_data_str(DataTypes::about, about)
-                                .add_data_str(DataTypes::avatar, avatar)
                                 .add_data(
                                     DataTypes::sub_level,
                                     JsonValue::Number(Number::from(sub_level)),
@@ -323,6 +320,20 @@ impl OmikronConnection {
                                     DataTypes::sub_end,
                                     JsonValue::Number(Number::from(sub_end)),
                                 );
+
+                        if let Some(display) = display {
+                            response = response.add_data_str(DataTypes::display, display);
+                        }
+                        if let Some(status) = status {
+                            response = response.add_data_str(DataTypes::status, status);
+                        }
+                        if let Some(about) = about {
+                            response = response.add_data_str(DataTypes::about, about);
+                        }
+                        if let Some(avatar) = avatar {
+                            response =
+                                response.add_data_str(DataTypes::avatar, STANDARD.encode(avatar));
+                        }
 
                         let user_status = user_online_tracker::get_user_status(id).await;
                         let iota_connections =
@@ -386,10 +397,6 @@ impl OmikronConnection {
                                     DataTypes::iota_id,
                                     JsonValue::Number(Number::from(iota_id)),
                                 )
-                                .add_data_str(DataTypes::display, display)
-                                .add_data_str(DataTypes::status, status)
-                                .add_data_str(DataTypes::about, about)
-                                .add_data_str(DataTypes::avatar, avatar)
                                 .add_data(
                                     DataTypes::sub_level,
                                     JsonValue::Number(Number::from(sub_level)),
@@ -398,6 +405,20 @@ impl OmikronConnection {
                                     DataTypes::sub_end,
                                     JsonValue::Number(Number::from(sub_end)),
                                 );
+
+                        if let Some(display) = display {
+                            response = response.add_data_str(DataTypes::display, display);
+                        }
+                        if let Some(status) = status {
+                            response = response.add_data_str(DataTypes::status, status);
+                        }
+                        if let Some(about) = about {
+                            response = response.add_data_str(DataTypes::about, about);
+                        }
+                        if let Some(avatar) = avatar {
+                            response =
+                                response.add_data_str(DataTypes::avatar, STANDARD.encode(avatar));
+                        }
 
                         let user_status = user_online_tracker::get_user_status(id).await;
                         let iota_connections =
@@ -570,23 +591,44 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::complete_register_iota) {
-            if let (Some(iota_id), Some(public_key)) = (
-                cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()),
-                cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()),
-            ) {
-                match sql::register_complete_iota(iota_id, public_key.to_string()).await {
-                    Ok(_) => {
-                        let response = CommunicationValue::new(CommunicationType::success)
-                            .with_id(cv.get_id());
-                        self.send_message(&response).await;
+            let iota_id_opt = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64());
+
+            if let Some(public_key) = cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()) {
+                if let Some(iota_id) = iota_id_opt {
+                    // Existing logic to update iota
+                    match sql::register_complete_iota(iota_id, public_key.to_string()).await {
+                        Ok(_) => {
+                            let response = CommunicationValue::new(CommunicationType::success)
+                                .with_id(cv.get_id());
+                            self.send_message(&response).await;
+                        }
+                        Err(e) => {
+                            self.send_message(
+                                &CommunicationValue::new(CommunicationType::error)
+                                    .with_id(cv.get_id())
+                                    .add_data_str(DataTypes::error_type, e.to_string()),
+                            )
+                            .await;
+                        }
                     }
-                    Err(e) => {
-                        self.send_message(
-                            &CommunicationValue::new(CommunicationType::error)
-                                .with_id(cv.get_id())
-                                .add_data_str(DataTypes::error_type, e.to_string()),
-                        )
-                        .await;
+                } else {
+                    // New logic to create iota and return id
+                    match sql::create_new_iota(public_key.to_string()).await {
+                        Ok(new_iota_id) => {
+                            let response =
+                                CommunicationValue::new(CommunicationType::complete_register_iota)
+                                    .with_id(cv.get_id())
+                                    .add_data(DataTypes::iota_id, JsonValue::from(new_iota_id));
+                            self.send_message(&response).await;
+                        }
+                        Err(e) => {
+                            self.send_message(
+                                &CommunicationValue::new(CommunicationType::error)
+                                    .with_id(cv.get_id())
+                                    .add_data_str(DataTypes::error_type, e.to_string()),
+                            )
+                            .await;
+                        }
                     }
                 }
             } else {
