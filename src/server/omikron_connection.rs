@@ -305,6 +305,7 @@ impl OmikronConnection {
                     {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_user_data)
+                                .with_id(cv.get_id())
                                 .add_data_str(DataTypes::username, username)
                                 .add_data_str(DataTypes::public_key, public_key)
                                 .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
@@ -390,6 +391,7 @@ impl OmikronConnection {
                     {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_user_data)
+                                .with_id(cv.get_id())
                                 .add_data_str(DataTypes::username, username)
                                 .add_data_str(DataTypes::public_key, public_key)
                                 .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
@@ -463,16 +465,14 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::get_iota_data) {
-            if let Some(iota_id) = cv.get_data(DataTypes::iota_id).cloned() {
+            if let Some(iota_id) = cv.get_data(DataTypes::iota_id) {
                 if let Some(iota_id) = iota_id.as_i64() {
                     if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id).await {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_iota_data)
+                                .with_id(cv.get_id())
                                 .add_data_str(DataTypes::public_key, public_key)
-                                .add_data(
-                                    DataTypes::iota_id,
-                                    JsonValue::Number(Number::from(iota_id)),
-                                );
+                                .add_data(DataTypes::iota_id, JsonValue::from(iota_id));
 
                         let iota_connections =
                             user_online_tracker::get_iota_omikron_connections(iota_id)
@@ -501,6 +501,7 @@ impl OmikronConnection {
                         if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id).await {
                             let mut response =
                                 CommunicationValue::new(CommunicationType::get_iota_data)
+                                    .with_id(cv.get_id())
                                     .add_data_str(DataTypes::public_key, public_key)
                                     .add_data(
                                         DataTypes::user_id,
@@ -540,6 +541,7 @@ impl OmikronConnection {
                         if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id).await {
                             let mut response =
                                 CommunicationValue::new(CommunicationType::get_iota_data)
+                                    .with_id(cv.get_id())
                                     .add_data_str(DataTypes::public_key, public_key)
                                     .add_data(
                                         DataTypes::user_id,

@@ -229,7 +229,7 @@ pub async fn get_by_user_id(
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
     let row = sqlx::query(
-        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE id = ?",
+        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE id = CAST(? AS UNSIGNED)",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -292,7 +292,7 @@ pub async fn get_users_by_iota_id(
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
     let rows = sqlx::query(
-        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE iota_id = ?",
+        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE iota_id = CAST(? AS UNSIGNED)",
     )
     .bind(iota_id_param)
     .fetch_all(pool)
@@ -336,7 +336,7 @@ pub async fn change_username(id: i64, new_username: String) -> Result<(), sqlx::
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET username = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET username = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_username)
         .bind(id)
         .execute(pool)
@@ -349,7 +349,7 @@ pub async fn change_display_name(id: i64, new_display: String) -> Result<(), sql
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET display = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET display = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_display)
         .bind(id)
         .execute(pool)
@@ -362,7 +362,7 @@ pub async fn change_avatar(id: i64, new_avatar: String) -> Result<(), sqlx::Erro
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET avatar = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET avatar = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_avatar)
         .bind(id)
         .execute(pool)
@@ -375,7 +375,7 @@ pub async fn change_about(id: i64, new_about: String) -> Result<(), sqlx::Error>
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET about = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET about = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_about)
         .bind(id)
         .execute(pool)
@@ -388,7 +388,7 @@ pub async fn change_status(id: i64, new_status: String) -> Result<(), sqlx::Erro
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET status = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET status = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_status)
         .bind(id)
         .execute(pool)
@@ -401,7 +401,7 @@ pub async fn change_iota_id(id: i64, new_iota_id: i64) -> Result<(), sqlx::Error
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET iota_id = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET iota_id = CAST(? AS UNSIGNED) WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_iota_id)
         .bind(id)
         .execute(pool)
@@ -418,12 +418,14 @@ pub async fn change_keys(
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET public_key = ?, private_key_hash = ? WHERE id = ?")
-        .bind(new_public_key)
-        .bind(new_private_key_hash)
-        .bind(id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE users SET public_key = ?, private_key_hash = ? WHERE id = CAST(? AS UNSIGNED)",
+    )
+    .bind(new_public_key)
+    .bind(new_private_key_hash)
+    .bind(id)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
@@ -431,7 +433,7 @@ pub async fn change_token(id: i64, new_token: String) -> Result<(), sqlx::Error>
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE users SET token = ? WHERE id = ?")
+    sqlx::query("UPDATE users SET token = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_token)
         .bind(id)
         .execute(pool)
@@ -527,7 +529,7 @@ pub async fn delete_user(id: i64) -> Result<(), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("DELETE FROM users WHERE id = ?")
+    sqlx::query("DELETE FROM users WHERE id = CAST(? AS UNSIGNED)")
         .bind(id)
         .execute(pool)
         .await?;
@@ -539,19 +541,21 @@ pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query_as::<_, (i64, Vec<u8>)>("SELECT id, public_key FROM iotas WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .map(|(id, public_key)| (id, String::from_utf8_lossy(&public_key).to_string()))
-        .ok_or_else(|| sqlx::Error::RowNotFound)
+    sqlx::query_as::<_, (i64, Vec<u8>)>(
+        "SELECT id, public_key FROM iotas WHERE id = CAST(? AS UNSIGNED)",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .map(|(id, public_key)| (id, String::from_utf8_lossy(&public_key).to_string()))
+    .ok_or_else(|| sqlx::Error::RowNotFound)
 }
 
 pub async fn change_iota_key(id: i64, new_key: String) -> Result<(), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("UPDATE iotas SET public_key = ? WHERE id = ?")
+    sqlx::query("UPDATE iotas SET public_key = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(new_key)
         .bind(id)
         .execute(pool)
@@ -564,7 +568,7 @@ pub async fn delete_iota(id: i64) -> Result<(), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("DELETE FROM iotas WHERE id = ?")
+    sqlx::query("DELETE FROM iotas WHERE id = CAST(? AS UNSIGNED)")
         .bind(id)
         .execute(pool)
         .await?;
@@ -598,7 +602,7 @@ pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error>
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
     let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-        "SELECT public_key, ip_address FROM omikrons WHERE id = ?",
+        "SELECT public_key, ip_address FROM omikrons WHERE id = CAST(? AS UNSIGNED)",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -619,7 +623,7 @@ pub async fn set_omikron_active(id: i64, active: bool) -> Result<(), sqlx::Error
 
     let active = if active { 1 } else { 0 };
 
-    sqlx::query("UPDATE omikrons SET active = ? WHERE id = ?")
+    sqlx::query("UPDATE omikrons SET active = ? WHERE id = CAST(? AS UNSIGNED)")
         .bind(active)
         .bind(id)
         .execute(pool)
