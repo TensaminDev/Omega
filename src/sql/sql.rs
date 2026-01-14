@@ -445,22 +445,22 @@ pub async fn register_complete_user(
     id: i64,
     username: String,
     public_key: String,
-    private_key_hash: String,
     iota_id: i64,
     token: String,
 ) -> Result<(), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query("INSERT INTO users (id, username, public_key, private_key_hash, iota_id, token) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(id)
-        .bind(username)
-        .bind(public_key)
-        .bind(private_key_hash)
-        .bind(iota_id)
-        .bind(token)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO users (id, username, public_key, iota_id, token) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(username)
+    .bind(public_key)
+    .bind(iota_id)
+    .bind(token)
+    .execute(pool)
+    .await?;
 
     Ok(())
 }
@@ -541,14 +541,23 @@ pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
 
-    sqlx::query_as::<_, (i64, Vec<u8>)>(
+    let result = sqlx::query_as::<_, (u64, Vec<u8>)>(
         "SELECT id, public_key FROM iotas WHERE id = CAST(? AS UNSIGNED)",
     )
     .bind(id)
     .fetch_optional(pool)
-    .await?
-    .map(|(id, public_key)| (id, String::from_utf8_lossy(&public_key).to_string()))
-    .ok_or_else(|| sqlx::Error::RowNotFound)
+    .await;
+
+    match result {
+        Ok(optional_row) => match optional_row {
+            Some((id_u64, public_key)) => Ok((
+                id_u64 as i64,
+                String::from_utf8_lossy(&public_key).to_string(),
+            )),
+            None => Err(sqlx::Error::RowNotFound),
+        },
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn change_iota_key(id: i64, new_key: String) -> Result<(), sqlx::Error> {
