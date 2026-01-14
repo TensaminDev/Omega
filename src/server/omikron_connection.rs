@@ -651,14 +651,12 @@ impl OmikronConnection {
                 cv.get_data(DataTypes::username).and_then(|v| v.as_str()),
                 cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()),
                 cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()),
-                cv.get_data(DataTypes::reset_token).and_then(|v| v.as_str()), // Assuming reset_token is sent as token
+                cv.get_data(DataTypes::reset_token).and_then(|v| v.as_str()),
             ) {
-                // The documentation does not specify a private_key_hash, using an empty string.
                 match sql::register_complete_user(
                     user_id,
                     username.to_string(),
                     public_key.to_string(),
-                    "".to_string(), // private_key_hash
                     iota_id,
                     reset_token.to_string(),
                 )
