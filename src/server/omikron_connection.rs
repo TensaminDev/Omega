@@ -228,11 +228,15 @@ impl OmikronConnection {
             }
             return;
         }
+
         if cv.is_type(CommunicationType::iota_connected) {
+            log_in!(PrintType::Omega, "IOTA connected");
             if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
                 user_online_tracker::track_iota_connection(iota_id, omikron_id).await;
+                let mut user_ids = JsonValue::Array(Vec::new());
                 if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
                     for user in users {
+                        let _ = user_ids.push(JsonValue::from(user.0));
                         user_online_tracker::track_user_status(
                             user.0,
                             ConnectionType::UserOffline,
@@ -240,7 +244,17 @@ impl OmikronConnection {
                         )
                         .await;
                     }
+                } else {
+                    log_in!(PrintType::General, "SQL error, when loading users for IOTA");
                 }
+                self.send_message(
+                    &CommunicationValue::new(CommunicationType::iota_user_data)
+                        .with_id(cv.get_id())
+                        .add_data(DataTypes::user_ids, user_ids),
+                )
+                .await;
+            } else {
+                log_in!(PrintType::General, "No IOTA ID found");
             }
             return;
         }
