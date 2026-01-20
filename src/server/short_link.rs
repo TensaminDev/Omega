@@ -11,7 +11,7 @@ pub async fn add_short_link(long: &str) -> Result<String, ()> {
     LINKS.insert(raw.clone(), long.to_string());
 
     Ok(format!(
-        "omega.tensamin.net/direct/{}",
+        "https://omega.tensamin.net/direct/{}",
         format_with_dashes(&raw)
     ))
 }
@@ -38,9 +38,19 @@ pub async fn generate_short_link() -> String {
 }
 
 pub async fn get_short_link(short: &str) -> Result<String, ()> {
-    let normalized = normalize_short(short);
+    let key = if short.contains("/") {
+        short.split("/").nth(1).unwrap_or_default()
+    } else {
+        short
+    };
+    let frag = short.replace(key, "");
+    let normalized = normalize_short(&key);
 
-    LINKS.get(&normalized).map(|v| v.value().clone()).ok_or(())
+    if let Ok(t) = LINKS.get(&normalized).map(|v| v.value().clone()).ok_or(()) {
+        Ok(format!("{}{}", t, frag))
+    } else {
+        Err(())
+    }
 }
 
 /* ---------------- helpers ---------------- */
