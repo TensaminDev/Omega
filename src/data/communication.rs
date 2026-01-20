@@ -45,7 +45,7 @@ pub enum DataTypes {
     call_id,
     call_token,
     untill,
-    enable,
+    enabled,
     start_date,
     end_date,
     receiver_id,
