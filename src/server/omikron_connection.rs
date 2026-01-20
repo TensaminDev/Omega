@@ -1,4 +1,5 @@
 use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
+use crate::server::short_link::add_short_link;
 use crate::sql::connection_status::ConnectionType;
 use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get_omikron_by_id};
 use crate::sql::user_online_tracker::{self};
@@ -472,6 +473,21 @@ impl OmikronConnection {
                     }
                 }
             }
+
+            if cv.is_type(CommunicationType::shorten_link) {
+                if let Some(link) = cv.get_data(DataTypes::link) {
+                    if let Some(link) = link.as_str() {
+                        if let Ok(short_link) = add_short_link(link).await {
+                            let response = CommunicationValue::new(CommunicationType::shorten_link)
+                                .with_id(cv.get_id())
+                                .add_data(DataTypes::link, JsonValue::String(short_link));
+                            self.send_message(&response).await;
+                            return;
+                        }
+                    }
+                }
+            }
+
             let response =
                 CommunicationValue::new(CommunicationType::error_not_found).with_id(cv.get_id());
             self.send_message(&response).await;

@@ -1,5 +1,6 @@
 use crate::log;
 use crate::server::api;
+use crate::server::short_link::get_short_link;
 use crate::server::socket;
 use crate::util::file_util::load_file_buf;
 
@@ -126,6 +127,22 @@ impl Service<HttpRequest<Incoming>> for HttpService {
                 };
 
                 Ok(api::handle(&path, headers.clone(), body_string).await)
+            } else if path.starts_with("/direct") {
+                let short = path.split('/').nth(2).unwrap_or_default();
+                if let Ok(long) = get_short_link(short).await {
+                    let response = HttpResponse::builder()
+                        .status(StatusCode::FOUND)
+                        .header("Location", long)
+                        .body(Full::new(Bytes::from("")))
+                        .unwrap();
+                    Ok(response)
+                } else {
+                    let response = HttpResponse::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Full::new(Bytes::from("Short link not found")))
+                        .unwrap();
+                    Ok(response)
+                }
             } else {
                 let response = HttpResponse::builder()
                     .status(StatusCode::BAD_REQUEST)
