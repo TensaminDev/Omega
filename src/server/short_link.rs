@@ -4,14 +4,14 @@ use rand::{Rng, thread_rng};
 
 static LINKS: Lazy<DashMap<String, String>> = Lazy::new(DashMap::new);
 
-const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHJKLMNPRSTUVWXYZ#1234567890";
+const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHJKLMNPRSTUVWXYZ1234567890";
 
 pub async fn add_short_link(long: &str) -> Result<String, ()> {
     let raw = generate_unique_short_link().await;
     LINKS.insert(raw.clone(), long.to_string());
 
     Ok(format!(
-        "omega.tensamin.net/direct/{}",
+        "https://omega.tensamin.net/direct/{}",
         format_with_dashes(&raw)
     ))
 }
@@ -38,9 +38,19 @@ pub async fn generate_short_link() -> String {
 }
 
 pub async fn get_short_link(short: &str) -> Result<String, ()> {
-    let normalized = normalize_short(short);
+    let key = if short.contains("/") {
+        short.split("/").nth(1).unwrap_or_default()
+    } else {
+        short
+    };
+    let frag = short.replace(key, "");
+    let normalized = normalize_short(&key);
 
-    LINKS.get(&normalized).map(|v| v.value().clone()).ok_or(())
+    if let Ok(t) = LINKS.get(&normalized).map(|v| v.value().clone()).ok_or(()) {
+        Ok(format!("{}{}", t, frag))
+    } else {
+        Err(())
+    }
 }
 
 /* ---------------- helpers ---------------- */

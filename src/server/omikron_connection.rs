@@ -68,7 +68,7 @@ impl OmikronConnection {
                 message_text
             );
         }
-        sender.send(message_text).await.unwrap();
+        let _ = sender.send(message_text).await;
     }
     pub async fn get_omikron_id(&self) -> i64 {
         *self.omikron_id.read().await
@@ -207,6 +207,20 @@ impl OmikronConnection {
             self.close().await;
         }
         let omikron_id = self.get_omikron_id().await;
+
+        if cv.is_type(CommunicationType::shorten_link) {
+            if let Some(link) = cv.get_data(DataTypes::link) {
+                if let Some(link) = link.as_str() {
+                    if let Ok(short_link) = add_short_link(link).await {
+                        let response = CommunicationValue::new(CommunicationType::shorten_link)
+                            .with_id(cv.get_id())
+                            .add_data(DataTypes::link, JsonValue::String(short_link));
+                        self.send_message(&response).await;
+                        return;
+                    }
+                }
+            }
+        }
 
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
@@ -470,20 +484,6 @@ impl OmikronConnection {
 
                         self.send_message(&response).await;
                         return;
-                    }
-                }
-            }
-
-            if cv.is_type(CommunicationType::shorten_link) {
-                if let Some(link) = cv.get_data(DataTypes::link) {
-                    if let Some(link) = link.as_str() {
-                        if let Ok(short_link) = add_short_link(link).await {
-                            let response = CommunicationValue::new(CommunicationType::shorten_link)
-                                .with_id(cv.get_id())
-                                .add_data(DataTypes::link, JsonValue::String(short_link));
-                            self.send_message(&response).await;
-                            return;
-                        }
                     }
                 }
             }

@@ -128,8 +128,8 @@ impl Service<HttpRequest<Incoming>> for HttpService {
 
                 Ok(api::handle(&path, headers.clone(), body_string).await)
             } else if path.starts_with("/direct") {
-                let short = path.split('/').nth(2).unwrap_or_default();
-                if let Ok(long) = get_short_link(short).await {
+                let short = path.replace("/direct/", "");
+                if let Ok(long) = get_short_link(&short).await {
                     let response = HttpResponse::builder()
                         .status(StatusCode::FOUND)
                         .header("Location", long)
