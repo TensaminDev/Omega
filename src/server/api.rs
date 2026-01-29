@@ -2,9 +2,7 @@ use crate::data::communication::{CommunicationType, CommunicationValue, DataType
 use crate::get_public_key;
 use crate::server::omikron_manager::get_random_omikron;
 use crate::sql::sql;
-use crate::sql::user_online_tracker::{
-    get_iota_omikron_connections, get_iota_primary_omikron_connection,
-};
+use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
 use crate::{
     sql::sql::{get_by_user_id, get_omikron_by_id},
     util::crypto_helper::public_key_to_base64,
@@ -19,12 +17,12 @@ use json::number::Number;
 
 pub async fn handle(
     path: &str,
-    headers: HeaderMap<HeaderValue>,
+    _headers: HeaderMap<HeaderValue>,
     body_string: Option<String>,
 ) -> HttpResponse<Full<Bytes>> {
     let path_parts: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
 
-    let body: Option<JsonValue> = if body_string.is_some() {
+    let _body: Option<JsonValue> = if body_string.is_some() {
         if let Ok(body_json) = json::parse(&body_string.unwrap()) {
             Some(body_json)
         } else {
@@ -37,7 +35,7 @@ pub async fn handle(
     //   get/
     //     omikron/
     //     id/
-    let (status, content, body_text) = if path_parts.len() >= 2 {
+    let (status, body_text) = if path_parts.len() >= 2 {
         match path_parts[1] {
             "get" => match path_parts[2] {
                 // api/get/omikron -> any omikron
@@ -50,7 +48,6 @@ pub async fn handle(
                             {
                                 (
                                     StatusCode::OK,
-                                    "application/json",
                                     format!(
                                         "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
                                         omikron_conn.get_omikron_id().await,
@@ -61,14 +58,12 @@ pub async fn handle(
                             } else {
                                 (
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                    "text/plain",
                                     "selected an invalid omikron".to_string(),
                                 )
                             }
                         } else {
                             (
                                 StatusCode::NOT_FOUND,
-                                "text/plain",
                                 "couldn't find online omikron".to_string(),
                             )
                         }
@@ -79,7 +74,6 @@ pub async fn handle(
                         } else if let Ok((public_key, ip_address)) = get_omikron_by_id(id).await {
                             (
                                 StatusCode::OK,
-                                "application/json",
                                 format!(
                                     "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
                                     id, public_key, ip_address
@@ -91,7 +85,6 @@ pub async fn handle(
                             {
                                 (
                                     StatusCode::OK,
-                                    "application/json",
                                     format!(
                                         "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
                                         omikron_id, public_key, ip_address
@@ -109,7 +102,6 @@ pub async fn handle(
                                 {
                                     (
                                         StatusCode::OK,
-                                        "application/json",
                                         format!(
                                             "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
                                             omikron_id, public_key, ip_address
@@ -171,11 +163,10 @@ pub async fn handle(
                                         DataTypes::sub_end,
                                         JsonValue::Number(Number::from(sub_end)),
                                     );
-                                (StatusCode::OK, "application/json", cv.to_json().to_string())
+                                (StatusCode::OK, cv.to_json().to_string())
                             } else {
                                 (
                                     StatusCode::OK,
-                                    "application/json",
                                     CommunicationValue::new(CommunicationType::error_not_found)
                                         .to_json()
                                         .to_string(),
@@ -184,11 +175,7 @@ pub async fn handle(
                         }
                     }
                 }
-                "public_key" => (
-                    StatusCode::OK,
-                    "application/json",
-                    public_key_to_base64(&get_public_key()),
-                ),
+                "public_key" => (StatusCode::OK, public_key_to_base64(&get_public_key())),
                 "user" => {
                     if path_parts.len() != 4 {
                         bad_request()
@@ -247,11 +234,10 @@ pub async fn handle(
                                         base64::engine::general_purpose::STANDARD.encode(avatar),
                                     );
                                 }
-                                (StatusCode::OK, "application/json", cv.to_json().to_string())
+                                (StatusCode::OK, cv.to_json().to_string())
                             } else {
                                 (
                                     StatusCode::OK,
-                                    "application/json",
                                     CommunicationValue::new(CommunicationType::error_not_found)
                                         .to_json()
                                         .to_string(),
@@ -278,31 +264,9 @@ pub async fn handle(
     let body = Full::new(Bytes::from(body_text.to_string()));
     HttpResponse::builder().status(status).body(body).unwrap()
 }
-pub fn bad_request() -> (StatusCode, &'static str, String) {
-    (
-        StatusCode::BAD_REQUEST,
-        "text/text",
-        "400 Bad Request".to_string(),
-    )
+pub fn bad_request() -> (StatusCode, String) {
+    (StatusCode::BAD_REQUEST, "400 Bad Request".to_string())
 }
-pub fn unauthorized() -> (StatusCode, &'static str, String) {
-    (
-        StatusCode::UNAUTHORIZED,
-        "text/text",
-        "401 Unauthorized".to_string(),
-    )
-}
-pub fn forbidden() -> (StatusCode, &'static str, String) {
-    (
-        StatusCode::FORBIDDEN,
-        "text/text",
-        "403 Forbidden".to_string(),
-    )
-}
-pub fn not_found() -> (StatusCode, &'static str, String) {
-    (
-        StatusCode::NOT_FOUND,
-        "text/text",
-        "404 Not Found".to_string(),
-    )
+pub fn not_found() -> (StatusCode, String) {
+    (StatusCode::NOT_FOUND, "404 Not Found".to_string())
 }

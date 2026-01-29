@@ -1,11 +1,11 @@
 use crate::sql;
-use crate::sql::connection_status::ConnectionType;
+use crate::sql::connection_status::UserStatus;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 
 #[derive(Debug, Clone)]
-pub struct UserStatus {
-    pub connection_type: ConnectionType,
+pub struct UserConnection {
+    pub connection_type: UserStatus,
     pub omikron_id: i64,
 }
 
@@ -16,7 +16,7 @@ static IOTA_PRIMARY_OMIKRON_CONNECTION: Lazy<DashMap<i64, i64>> = Lazy::new(Dash
 static IOTA_OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Vec<i64>>> = Lazy::new(DashMap::new);
 
 // UserID -> UserStatus
-static USER_STATUS_MAP: Lazy<DashMap<i64, UserStatus>> = Lazy::new(DashMap::new);
+static USER_STATUS_MAP: Lazy<DashMap<i64, UserConnection>> = Lazy::new(DashMap::new);
 
 pub fn track_iota_connection(iota_id: i64, omikron_id: i64, primary: bool) {
     let mut entry = IOTA_OMIKRON_CONNECTIONS
@@ -60,22 +60,18 @@ pub fn get_iota_omikron_connections(iota_id: i64) -> Option<Vec<i64>> {
     IOTA_OMIKRON_CONNECTIONS.get(&iota_id).map(|v| v.clone())
 }
 
-pub fn track_user_status(user_id: i64, status: ConnectionType, omikron_id: i64) {
+pub fn track_user_status(user_id: i64, status: UserStatus, omikron_id: i64) {
     USER_STATUS_MAP.insert(
         user_id,
-        UserStatus {
+        UserConnection {
             connection_type: status,
             omikron_id,
         },
     );
 }
 
-pub fn get_user_status(user_id: i64) -> Option<UserStatus> {
+pub fn get_user_status(user_id: i64) -> Option<UserConnection> {
     USER_STATUS_MAP.get(&user_id).map(|v| v.clone())
-}
-
-pub fn untrack_user(user_id: i64) {
-    USER_STATUS_MAP.remove(&user_id);
 }
 
 pub fn untrack_many_users(user_ids: &[i64]) {

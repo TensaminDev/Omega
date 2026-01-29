@@ -2,7 +2,6 @@ use crate::log;
 use crate::server::api;
 use crate::server::short_link::get_short_link;
 use crate::server::socket;
-use crate::util::file_util::load_file_buf;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -21,12 +20,14 @@ use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha1::{Digest, Sha1};
 use std::error::Error;
-use std::io::ErrorKind;
-use std::io::{self, BufReader};
+use std::fs::{self, File};
+use std::io::{self, BufReader, ErrorKind};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::result::Result::Ok;
 use std::sync::Arc;
 use std::{future::Future, pin::Pin, time::Duration};
+
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_rustls::TlsAcceptor;
@@ -352,6 +353,36 @@ fn calculate_accept_key(key: &str) -> String {
     sha1.update(websocket_guid.as_bytes());
     let result = sha1.finalize();
     STANDARD.encode(result)
+}
+
+pub fn load_file_buf(path: &str, name: &str) -> io::Result<BufReader<File>> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
+    let dir = exe
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_string_lossy()
+        .to_string();
+    let dir = Path::new(&dir).join(path);
+    let file_path = dir.join(name);
+
+    if !dir.exists() {
+        if let Err(_) = fs::create_dir_all(&dir) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Directory creation failed",
+            ));
+        }
+    }
+
+    if !file_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "File creation failed",
+        ));
+    }
+
+    let file = File::open(&file_path)?;
+    Ok(BufReader::new(file))
 }
 
 /// Loads TLS config. Returns Ok(None) if cert files are not found, and an error if parsing fails.

@@ -10,31 +10,25 @@ use x448::{PublicKey, Secret, SharedSecret};
 /// Errors for crypto operations
 #[derive(Debug)]
 pub enum CryptoError {
-    Base64Decode(base64::DecodeError),
-    InvalidKey,
+    Base64Decode,
     AgreementError,
     EncryptionError(aes_gcm::Error),
     DecryptionError(aes_gcm::Error),
 }
 
 impl From<base64::DecodeError> for CryptoError {
-    fn from(err: base64::DecodeError) -> Self {
-        CryptoError::Base64Decode(err)
+    fn from(_: base64::DecodeError) -> Self {
+        CryptoError::Base64Decode
     }
 }
 
-pub struct KeyPair {
-    pub secret: Secret,
-    pub public: PublicKey,
-}
-
-pub fn generate_keypair() -> KeyPair {
+pub fn generate_keypair() -> (Secret, PublicKey) {
     let mut buf = [0u8; 56];
     let mut rng = OsRng;
     rng.fill_bytes(&mut buf);
     let secret = Secret::from_bytes(&buf).unwrap();
     let public = PublicKey::from(&secret);
-    KeyPair { secret, public }
+    (secret, public)
 }
 
 pub fn public_key_to_base64(pubkey: &PublicKey) -> String {

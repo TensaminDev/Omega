@@ -1,7 +1,7 @@
 use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
 use crate::server::omikron_manager;
 use crate::server::short_link::add_short_link;
-use crate::sql::connection_status::ConnectionType;
+use crate::sql::connection_status::UserStatus;
 use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get_omikron_by_id};
 use crate::sql::user_online_tracker::{self};
 use crate::util::crypto_helper::encrypt;
@@ -12,7 +12,6 @@ use dashmap::DashMap;
 use futures::SinkExt;
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
-use futures::task::UnsafeFutureObj;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use json::JsonValue;
@@ -138,7 +137,7 @@ impl OmikronConnection {
 
                 let omikron_pub_key = match PublicKey::from_bytes(&pub_key_bytes) {
                     Some(k) => k,
-                    None => {
+                    _ => {
                         self.send_error_response(
                             &cv.get_id(),
                             CommunicationType::error_invalid_public_key,
@@ -226,7 +225,7 @@ impl OmikronConnection {
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                user_online_tracker::track_user_status(user_id, ConnectionType::Online, omikron_id);
+                user_online_tracker::track_user_status(user_id, UserStatus::Online, omikron_id);
             }
             return;
         }
@@ -235,7 +234,7 @@ impl OmikronConnection {
                 if let Some(status) = user_online_tracker::get_user_status(user_id) {
                     user_online_tracker::track_user_status(
                         user_id,
-                        ConnectionType::UserOffline,
+                        UserStatus::UserOffline,
                         status.omikron_id,
                     );
                 }
@@ -253,7 +252,7 @@ impl OmikronConnection {
                         let _ = user_ids.push(JsonValue::from(user.0));
                         user_online_tracker::track_user_status(
                             user.0,
-                            ConnectionType::UserOffline,
+                            UserStatus::UserOffline,
                             omikron_id,
                         );
                     }
@@ -292,7 +291,7 @@ impl OmikronConnection {
                     if let Some(user_id) = user_id_json.as_i64() {
                         user_online_tracker::track_user_status(
                             user_id,
-                            ConnectionType::Online,
+                            UserStatus::Online,
                             omikron_id,
                         );
                     }
@@ -388,7 +387,7 @@ impl OmikronConnection {
                         } else {
                             response = response.add_data(
                                 DataTypes::online_status,
-                                JsonValue::String(ConnectionType::IotaOffline.to_string()),
+                                JsonValue::String(UserStatus::IotaOffline.to_string()),
                             );
                         }
 
@@ -464,7 +463,7 @@ impl OmikronConnection {
                         } else {
                             response = response.add_data(
                                 DataTypes::online_status,
-                                JsonValue::String(ConnectionType::IotaOffline.to_string()),
+                                JsonValue::String(UserStatus::IotaOffline.to_string()),
                             );
                         }
                         response = response.add_data(

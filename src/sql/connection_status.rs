@@ -1,38 +1,27 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConnectionType {
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+
+#[derive(Debug, Clone, PartialEq, EnumIter, Eq)]
+#[allow(unused)]
+pub enum UserStatus {
     Online,
-    UserOffline,
-    IotaOffline,
+    PhoneOnline,
     Away,
     DoNotDisturb,
+    UserOffline,
+    IotaOffline,
 }
-impl ConnectionType {
-    pub fn to_str(&self) -> &str {
-        match self {
-            ConnectionType::Online => "online",
-            ConnectionType::UserOffline => "user_offline",
-            ConnectionType::IotaOffline => "iota_offline",
-            ConnectionType::Away => "away",
-            ConnectionType::DoNotDisturb => "do_not_disturb",
-        }
-    }
+#[allow(unused)]
+impl UserStatus {
     pub fn to_string(&self) -> String {
-        match self {
-            ConnectionType::Online => "online".to_string(),
-            ConnectionType::UserOffline => "user_offline".to_string(),
-            ConnectionType::IotaOffline => "iota_offline".to_string(),
-            ConnectionType::Away => "away".to_string(),
-            ConnectionType::DoNotDisturb => "do_not_disturb".to_string(),
-        }
+        format!("{:?}", self)
     }
-    pub fn from_str(s: &str) -> Option<ConnectionType> {
-        match s.to_lowercase().as_str() {
-            "online" => Some(ConnectionType::Online),
-            "user_offline" => Some(ConnectionType::UserOffline),
-            "iota_offline" => Some(ConnectionType::IotaOffline),
-            "away" => Some(ConnectionType::Away),
-            "do_not_disturb" => Some(ConnectionType::DoNotDisturb),
-            _ => None,
+    pub fn from_str(s: &str) -> Option<UserStatus> {
+        for sel in UserStatus::iter() {
+            if &sel.to_string() == s {
+                return Some(sel);
+            }
         }
+        None
     }
 }

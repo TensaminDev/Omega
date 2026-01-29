@@ -553,7 +553,7 @@ pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
                 id_u64 as i64,
                 String::from_utf8_lossy(&public_key).to_string(),
             )),
-            None => Err(sqlx::Error::RowNotFound),
+            _ => Err(sqlx::Error::RowNotFound),
         },
         Err(e) => Err(e),
     }
