@@ -225,7 +225,7 @@ impl OmikronConnection {
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                user_online_tracker::track_user_status(user_id, UserStatus::Online, omikron_id);
+                user_online_tracker::track_user_status(user_id, UserStatus::online, omikron_id);
             }
             return;
         }
@@ -234,7 +234,7 @@ impl OmikronConnection {
                 if let Some(status) = user_online_tracker::get_user_status(user_id) {
                     user_online_tracker::track_user_status(
                         user_id,
-                        UserStatus::UserOffline,
+                        UserStatus::user_offline,
                         status.omikron_id,
                     );
                 }
@@ -252,7 +252,7 @@ impl OmikronConnection {
                         let _ = user_ids.push(JsonValue::from(user.0));
                         user_online_tracker::track_user_status(
                             user.0,
-                            UserStatus::UserOffline,
+                            UserStatus::user_offline,
                             omikron_id,
                         );
                     }
@@ -291,7 +291,7 @@ impl OmikronConnection {
                     if let Some(user_id) = user_id_json.as_i64() {
                         user_online_tracker::track_user_status(
                             user_id,
-                            UserStatus::Online,
+                            UserStatus::online,
                             omikron_id,
                         );
                     }
@@ -387,7 +387,7 @@ impl OmikronConnection {
                         } else {
                             response = response.add_data(
                                 DataTypes::online_status,
-                                JsonValue::String(UserStatus::IotaOffline.to_string()),
+                                JsonValue::String(UserStatus::iota_offline.to_string()),
                             );
                         }
 
@@ -463,7 +463,7 @@ impl OmikronConnection {
                         } else {
                             response = response.add_data(
                                 DataTypes::online_status,
-                                JsonValue::String(UserStatus::IotaOffline.to_string()),
+                                JsonValue::String(UserStatus::iota_offline.to_string()),
                             );
                         }
                         response = response.add_data(
