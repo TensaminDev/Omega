@@ -1,4 +1,5 @@
 use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
+use crate::server::omikron_manager;
 use crate::server::short_link::add_short_link;
 use crate::sql::connection_status::ConnectionType;
 use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get_omikron_by_id};
@@ -11,6 +12,7 @@ use dashmap::DashMap;
 use futures::SinkExt;
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
+use futures::task::UnsafeFutureObj;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use json::JsonValue;
@@ -183,8 +185,7 @@ impl OmikronConnection {
 
                 if client_response == *self.challenge.read().await {
                     *self.challenged.write().await = true;
-                    let _ = sql::set_omikron_active(self.get_omikron_id().await, true);
-
+                    omikron_manager::add_omikron(self.clone()).await;
                     self.send_message(
                         &CommunicationValue::new(CommunicationType::identification_response)
                             .with_id(cv.get_id())
@@ -225,20 +226,18 @@ impl OmikronConnection {
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                user_online_tracker::track_user_status(user_id, ConnectionType::Online, omikron_id)
-                    .await;
+                user_online_tracker::track_user_status(user_id, ConnectionType::Online, omikron_id);
             }
             return;
         }
         if cv.is_type(CommunicationType::user_disconnected) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                if let Some(status) = user_online_tracker::get_user_status(user_id).await {
+                if let Some(status) = user_online_tracker::get_user_status(user_id) {
                     user_online_tracker::track_user_status(
                         user_id,
                         ConnectionType::UserOffline,
                         status.omikron_id,
-                    )
-                    .await;
+                    );
                 }
             }
             return;
@@ -247,7 +246,7 @@ impl OmikronConnection {
         if cv.is_type(CommunicationType::iota_connected) {
             log_in!(PrintType::Omega, "IOTA connected");
             if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
-                user_online_tracker::track_iota_connection(iota_id, omikron_id).await;
+                user_online_tracker::track_iota_connection(iota_id, omikron_id, true);
                 let mut user_ids = JsonValue::Array(Vec::new());
                 if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
                     for user in users {
@@ -256,8 +255,7 @@ impl OmikronConnection {
                             user.0,
                             ConnectionType::UserOffline,
                             omikron_id,
-                        )
-                        .await;
+                        );
                     }
                 } else {
                     log_in!(PrintType::General, "SQL error, when loading users for IOTA");
@@ -276,11 +274,11 @@ impl OmikronConnection {
         if cv.is_type(CommunicationType::iota_disconnected) {
             if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
                 let iota_offline =
-                    user_online_tracker::untrack_iota_connection(iota_id, omikron_id).await;
+                    user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
                 if iota_offline {
                     if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
                         let user_ids: Vec<i64> = users.iter().map(|u| u.0).collect();
-                        user_online_tracker::untrack_many_users(&user_ids).await;
+                        user_online_tracker::untrack_many_users(&user_ids);
                     }
                 }
             }
@@ -296,8 +294,7 @@ impl OmikronConnection {
                             user_id,
                             ConnectionType::Online,
                             omikron_id,
-                        )
-                        .await;
+                        );
                     }
                 }
             }
@@ -306,7 +303,7 @@ impl OmikronConnection {
             {
                 for iota_id_json in iota_ids {
                     if let Some(iota_id) = iota_id_json.as_i64() {
-                        user_online_tracker::track_iota_connection(iota_id, omikron_id).await;
+                        user_online_tracker::track_iota_connection(iota_id, omikron_id, true);
                     }
                 }
             }
@@ -365,10 +362,9 @@ impl OmikronConnection {
                                 response.add_data_str(DataTypes::avatar, STANDARD.encode(avatar));
                         }
 
-                        let user_status = user_online_tracker::get_user_status(id).await;
+                        let user_status = user_online_tracker::get_user_status(id);
                         let iota_connections =
                             user_online_tracker::get_iota_omikron_connections(iota_id)
-                                .await
                                 .unwrap_or_default();
                         response = response.add_data(
                             DataTypes::omikron_connections,
@@ -451,10 +447,9 @@ impl OmikronConnection {
                                 response.add_data_str(DataTypes::avatar, STANDARD.encode(avatar));
                         }
 
-                        let user_status = user_online_tracker::get_user_status(id).await;
+                        let user_status = user_online_tracker::get_user_status(id);
                         let iota_connections =
                             user_online_tracker::get_iota_omikron_connections(iota_id)
-                                .await
                                 .unwrap_or_default();
 
                         if let Some(user_status) = user_status {
@@ -506,7 +501,6 @@ impl OmikronConnection {
 
                         let iota_connections =
                             user_online_tracker::get_iota_omikron_connections(iota_id)
-                                .await
                                 .unwrap_or_default();
 
                         response = response.add_data(
@@ -544,7 +538,6 @@ impl OmikronConnection {
 
                             let iota_connections =
                                 user_online_tracker::get_iota_omikron_connections(iota_id)
-                                    .await
                                     .unwrap_or_default();
 
                             response = response.add_data(
@@ -585,7 +578,6 @@ impl OmikronConnection {
 
                             let iota_connections =
                                 user_online_tracker::get_iota_omikron_connections(iota_id)
-                                    .await
                                     .unwrap_or_default();
 
                             response = response.add_data(
@@ -904,7 +896,11 @@ impl OmikronConnection {
     pub async fn close(&self) {
         let mut sender = self.sender.write().await;
         if self.is_identified().await {
-            let _ = sql::set_omikron_active(self.get_omikron_id().await, false);
+            let omikron_id = self.get_omikron_id().await;
+            if omikron_id != 0 {
+                omikron_manager::remove_omikron(omikron_id).await;
+                user_online_tracker::untrack_omikron(omikron_id).await;
+            }
         }
         let _ = sender.close().await;
     }
@@ -912,6 +908,7 @@ impl OmikronConnection {
         if self.is_identified().await {
             let omikron_id = self.get_omikron_id().await;
             if omikron_id != 0 {
+                omikron_manager::remove_omikron(omikron_id).await;
                 user_online_tracker::untrack_omikron(omikron_id).await;
             }
         }

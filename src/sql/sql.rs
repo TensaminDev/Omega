@@ -87,7 +87,6 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS
         omikrons (
         id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
-        is_active INT(1) NOT NULL DEFAULT 0,
         public_key VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
         location VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
         ip_address VARCHAR(255) NOT NULL COLLATE utf8mb4_bin
@@ -589,23 +588,6 @@ pub async fn delete_iota(id: i64) -> Result<(), sqlx::Error> {
 //                                         OMIKRONS
 // ==========================================================================================
 
-pub async fn get_random_omikron() -> Result<(i64, String, String), sqlx::Error> {
-    let db_lock = SQL_DB.read().await;
-    let pool = db_lock.as_ref().expect("Database pool is not initialized");
-    let row = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>)>("SELECT id, public_key, ip_address FROM omikrons WHERE is_active = 1 ORDER BY RAND() LIMIT 1")
-        .fetch_optional(pool)
-        .await?;
-
-    match row {
-        Some((id, public_key, ip_address)) => Ok((
-            id,
-            String::from_utf8_lossy(&public_key).to_string(),
-            String::from_utf8_lossy(&ip_address).to_string(),
-        )),
-        _ => Err(sqlx::Error::RowNotFound),
-    }
-}
-
 pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
@@ -624,19 +606,4 @@ pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error>
         )),
         _ => Err(sqlx::Error::RowNotFound),
     }
-}
-
-pub async fn set_omikron_active(id: i64, active: bool) -> Result<(), sqlx::Error> {
-    let db_lock = SQL_DB.read().await;
-    let pool = db_lock.as_ref().expect("Database pool is not initialized");
-
-    let active = if active { 1 } else { 0 };
-
-    sqlx::query("UPDATE omikrons SET active = ? WHERE id = CAST(? AS UNSIGNED)")
-        .bind(active)
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    Ok(())
 }

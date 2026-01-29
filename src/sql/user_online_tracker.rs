@@ -1,9 +1,7 @@
 use crate::sql;
 use crate::sql::connection_status::ConnectionType;
+use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct UserStatus {
@@ -11,42 +9,59 @@ pub struct UserStatus {
     pub omikron_id: i64,
 }
 
+// IotaID -> Primary OmikronID
+static IOTA_PRIMARY_OMIKRON_CONNECTION: Lazy<DashMap<i64, i64>> = Lazy::new(DashMap::new);
+
 // IotaID -> Vec<OmikronID>
-static IOTA_OMIKRON_CONNECTIONS: Lazy<Arc<RwLock<HashMap<i64, Vec<i64>>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+static IOTA_OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Vec<i64>>> = Lazy::new(DashMap::new);
 
 // UserID -> UserStatus
-static USER_STATUS_MAP: Lazy<Arc<RwLock<HashMap<i64, UserStatus>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+static USER_STATUS_MAP: Lazy<DashMap<i64, UserStatus>> = Lazy::new(DashMap::new);
 
-pub async fn track_iota_connection(iota_id: i64, omikron_id: i64) {
-    let mut iota_map = IOTA_OMIKRON_CONNECTIONS.write().await;
-    let connections = iota_map.entry(iota_id).or_default();
-    if !connections.contains(&omikron_id) {
-        connections.push(omikron_id);
+pub fn track_iota_connection(iota_id: i64, omikron_id: i64, primary: bool) {
+    let mut entry = IOTA_OMIKRON_CONNECTIONS
+        .entry(iota_id)
+        .or_insert_with(Vec::new);
+
+    if !entry.contains(&omikron_id) {
+        entry.push(omikron_id);
+    }
+
+    if primary {
+        IOTA_PRIMARY_OMIKRON_CONNECTION.insert(iota_id, omikron_id);
     }
 }
 
-pub async fn untrack_iota_connection(iota_id: i64, omikron_id: i64) -> bool {
-    let mut iota_map = IOTA_OMIKRON_CONNECTIONS.write().await;
-    if let Some(connections) = iota_map.get_mut(&iota_id) {
+pub fn untrack_iota_connection(iota_id: i64, omikron_id: i64) -> bool {
+    if let Some(mut connections) = IOTA_OMIKRON_CONNECTIONS.get_mut(&iota_id) {
         connections.retain(|&id| id != omikron_id);
+
+        if IOTA_PRIMARY_OMIKRON_CONNECTION
+            .get(&iota_id)
+            .map(|p| *p == omikron_id)
+            .unwrap_or(false)
+        {
+            IOTA_PRIMARY_OMIKRON_CONNECTION.remove(&iota_id);
+        }
+
         if connections.is_empty() {
-            iota_map.remove(&iota_id);
-            return true; // Iota is now offline
+            IOTA_OMIKRON_CONNECTIONS.remove(&iota_id);
+            return true;
         }
     }
     false
 }
 
-pub async fn get_iota_omikron_connections(iota_id: i64) -> Option<Vec<i64>> {
-    let iota_map = IOTA_OMIKRON_CONNECTIONS.read().await;
-    iota_map.get(&iota_id).cloned()
+pub fn get_iota_primary_omikron_connection(iota_id: i64) -> Option<i64> {
+    IOTA_PRIMARY_OMIKRON_CONNECTION.get(&iota_id).map(|v| *v)
 }
 
-pub async fn track_user_status(user_id: i64, status: ConnectionType, omikron_id: i64) {
-    let mut user_map = USER_STATUS_MAP.write().await;
-    user_map.insert(
+pub fn get_iota_omikron_connections(iota_id: i64) -> Option<Vec<i64>> {
+    IOTA_OMIKRON_CONNECTIONS.get(&iota_id).map(|v| v.clone())
+}
+
+pub fn track_user_status(user_id: i64, status: ConnectionType, omikron_id: i64) {
+    USER_STATUS_MAP.insert(
         user_id,
         UserStatus {
             connection_type: status,
@@ -55,31 +70,34 @@ pub async fn track_user_status(user_id: i64, status: ConnectionType, omikron_id:
     );
 }
 
-pub async fn get_user_status(user_id: i64) -> Option<UserStatus> {
-    let user_map = USER_STATUS_MAP.read().await;
-    user_map.get(&user_id).cloned()
+pub fn get_user_status(user_id: i64) -> Option<UserStatus> {
+    USER_STATUS_MAP.get(&user_id).map(|v| v.clone())
 }
 
-pub async fn untrack_user(user_id: i64) {
-    let mut user_map = USER_STATUS_MAP.write().await;
-    user_map.remove(&user_id);
+pub fn untrack_user(user_id: i64) {
+    USER_STATUS_MAP.remove(&user_id);
 }
 
-pub async fn untrack_many_users(user_ids: &[i64]) {
-    let mut user_map = USER_STATUS_MAP.write().await;
+pub fn untrack_many_users(user_ids: &[i64]) {
     for user_id in user_ids {
-        user_map.remove(user_id);
+        USER_STATUS_MAP.remove(user_id);
     }
 }
 
 pub async fn untrack_omikron(omikron_id: i64) {
-    let mut iota_map = IOTA_OMIKRON_CONNECTIONS.write().await;
-    let mut user_map = USER_STATUS_MAP.write().await;
-
     let mut offline_iotas = Vec::new();
 
-    iota_map.retain(|iota_id, connections| {
+    IOTA_OMIKRON_CONNECTIONS.retain(|iota_id, connections| {
         connections.retain(|id| *id != omikron_id);
+
+        if IOTA_PRIMARY_OMIKRON_CONNECTION
+            .get(iota_id)
+            .map(|p| *p == omikron_id)
+            .unwrap_or(false)
+        {
+            IOTA_PRIMARY_OMIKRON_CONNECTION.remove(iota_id);
+        }
+
         if connections.is_empty() {
             offline_iotas.push(*iota_id);
             false
@@ -88,12 +106,12 @@ pub async fn untrack_omikron(omikron_id: i64) {
         }
     });
 
-    user_map.retain(|_, status| status.omikron_id != omikron_id);
+    USER_STATUS_MAP.retain(|_, status| status.omikron_id != omikron_id);
 
     for iota_id in offline_iotas {
         if let Ok(users) = sql::sql::get_users_by_iota_id(iota_id).await {
             for user in users {
-                user_map.remove(&user.0);
+                USER_STATUS_MAP.remove(&user.0);
             }
         }
     }

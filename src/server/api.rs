@@ -1,11 +1,12 @@
 use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
 use crate::get_public_key;
+use crate::server::omikron_manager::get_random_omikron;
 use crate::sql::sql;
+use crate::sql::user_online_tracker::{
+    get_iota_omikron_connections, get_iota_primary_omikron_connection,
+};
 use crate::{
-    sql::{
-        iota_omikron_tracker::get_omikron_for_iota,
-        sql::{get_by_user_id, get_omikron_by_id, get_random_omikron},
-    },
+    sql::sql::{get_by_user_id, get_omikron_by_id},
     util::crypto_helper::public_key_to_base64,
 };
 use axum::http::HeaderValue;
@@ -43,17 +44,33 @@ pub async fn handle(
                 // api/get/omikron/<id> -> omikron for id (user / iota / omikron)
                 "omikron" => {
                     if path_parts.len() == 3 {
-                        if let Ok((id, public_key, ip_address)) = get_random_omikron().await {
-                            (
-                                StatusCode::OK,
-                                "application/json",
-                                format!(
-                                    "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
-                                    id, public_key, ip_address
-                                ),
-                            )
+                        if let Ok(omikron_conn) = get_random_omikron().await {
+                            if let Ok((public_key, ip_address)) =
+                                sql::get_omikron_by_id(omikron_conn.get_omikron_id().await).await
+                            {
+                                (
+                                    StatusCode::OK,
+                                    "application/json",
+                                    format!(
+                                        "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
+                                        omikron_conn.get_omikron_id().await,
+                                        public_key,
+                                        ip_address
+                                    ),
+                                )
+                            } else {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "text/plain",
+                                    "selected an invalid omikron".to_string(),
+                                )
+                            }
                         } else {
-                            not_found()
+                            (
+                                StatusCode::NOT_FOUND,
+                                "text/plain",
+                                "couldn't find online omikron".to_string(),
+                            )
                         }
                     } else if path_parts.len() == 4 {
                         let id = path_parts[3].parse::<i64>().unwrap_or(0);
@@ -68,7 +85,7 @@ pub async fn handle(
                                     id, public_key, ip_address
                                 ),
                             )
-                        } else if let Some(omikron_id) = get_omikron_for_iota(id).await {
+                        } else if let Some(omikron_id) = get_iota_primary_omikron_connection(id) {
                             if let Ok((public_key, ip_address)) =
                                 get_omikron_by_id(omikron_id).await
                             {
@@ -86,7 +103,7 @@ pub async fn handle(
                         } else if let Ok((_, iota_id, _, _, _, _, _, _, _, _, _, _)) =
                             get_by_user_id(id).await
                         {
-                            if let Some(omikron_id) = get_omikron_for_iota(iota_id).await {
+                            if let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) {
                                 if let Ok((public_key, ip_address)) =
                                     get_omikron_by_id(omikron_id).await
                                 {
