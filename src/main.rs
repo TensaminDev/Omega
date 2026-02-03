@@ -45,5 +45,5 @@ async fn main() {
     }
     server::server::start(9187).await;
     log!("  Server");
-    loop {}
+    tokio::signal::ctrl_c().await.unwrap();
 }
