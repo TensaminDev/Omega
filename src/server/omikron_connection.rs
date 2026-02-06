@@ -191,6 +191,7 @@ impl OmikronConnection {
                             .add_data(DataTypes::accepted, JsonValue::Boolean(true)),
                     )
                     .await;
+                    log_in!(PrintType::Omega, "Omikron Connected");
                 } else {
                     self.send_error_response(
                         &cv.get_id(),
@@ -897,6 +898,7 @@ impl OmikronConnection {
         if self.is_identified().await {
             let omikron_id = self.get_omikron_id().await;
             if omikron_id != 0 {
+                log_in!(PrintType::Omega, "Omikron Disconnected");
                 omikron_manager::remove_omikron(omikron_id).await;
                 user_online_tracker::untrack_omikron(omikron_id).await;
             }
@@ -907,6 +909,7 @@ impl OmikronConnection {
         if self.is_identified().await {
             let omikron_id = self.get_omikron_id().await;
             if omikron_id != 0 {
+                log_in!(PrintType::Omega, "Omikron Disconnected");
                 omikron_manager::remove_omikron(omikron_id).await;
                 user_online_tracker::untrack_omikron(omikron_id).await;
             }
