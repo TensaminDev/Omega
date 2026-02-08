@@ -94,7 +94,17 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
     )
     .execute(&pool)
     .await;
-
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS
+        notifications (
+        id BIGINT UNSIGNED NOT NULL PRIMARY KEY AUTO INCREMENT,
+        sender_id BIGINT UNSIGNED NOT NULL,
+        receiver_id BIGINT UNSIGNED NOT NULL,
+        amount BIGINT UNSIGNED NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&pool)
+    .await;
     *db_lock = Some(pool);
     Ok(())
 }
@@ -396,6 +406,17 @@ pub async fn change_status(id: i64, new_status: String) -> Result<(), sqlx::Erro
     Ok(())
 }
 
+pub async fn delete_user(id: i64) -> Result<(), sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query("DELETE FROM users WHERE id = CAST(? AS UNSIGNED)")
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
 pub async fn change_iota_id(id: i64, new_iota_id: i64) -> Result<(), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
@@ -524,18 +545,6 @@ pub async fn register_complete_iota(id: i64, public_key: String) -> Result<(), s
     Ok(())
 }
 
-pub async fn delete_user(id: i64) -> Result<(), sqlx::Error> {
-    let db_lock = SQL_DB.read().await;
-    let pool = db_lock.as_ref().expect("Database pool is not initialized");
-
-    sqlx::query("DELETE FROM users WHERE id = CAST(? AS UNSIGNED)")
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-    Ok(())
-}
-
 pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
     let db_lock = SQL_DB.read().await;
     let pool = db_lock.as_ref().expect("Database pool is not initialized");
@@ -606,4 +615,56 @@ pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error>
         )),
         _ => Err(sqlx::Error::RowNotFound),
     }
+}
+
+// ==========================================================================================
+//                                         PHI
+// ==========================================================================================
+
+pub async fn add_notification(sender_id: i64, receiver_id: i64) -> Result<(), sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query(
+        r#"
+        INSERT INTO notifications (sender_id, receiver_id, amount)
+        VALUES (?, ?, 1)
+        ON DUPLICATE KEY UPDATE amount = amount + 1
+        "#,
+    )
+    .bind(sender_id)
+    .bind(receiver_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+pub async fn read_notification(sender_id: i64, receiver_id: i64) -> Result<(), sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query(
+        r#"
+        DELETE FROM notifications WHERE sender_id = ? AND receiver_id = ?
+        "#,
+    )
+    .bind(sender_id)
+    .bind(receiver_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+pub async fn get_notifications(user_id: i64) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT sender_id, amount FROM notifications WHERE receiver_id = ?
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
 }
