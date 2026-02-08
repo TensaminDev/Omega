@@ -35,6 +35,7 @@ pub enum DataTypes {
     denied_profiles,
     content,
     messages,
+    notifications,
     send_time,
     get_time,
     get_variant,
@@ -53,6 +54,7 @@ pub enum DataTypes {
     signature,
     signed,
     message,
+    message_state,
     last_ping,
     ping_iota,
     ping_clients,
@@ -112,6 +114,7 @@ impl DataTypes {
 #[allow(non_camel_case_types, dead_code)]
 pub enum CommunicationType {
     error,
+    error_anonymous,
     error_internal,
     error_invalid_data,
     error_invalid_user_id,
@@ -134,11 +137,17 @@ pub enum CommunicationType {
     settings_load,
     settings_list,
     message,
+    message_state,
     message_send,
     message_live,
     message_other_iota,
     message_chunk,
     messages_get,
+
+    push_notification,
+    read_notification,
+    get_notifications,
+
     change_confirm,
     confirm_receive,
     confirm_read,

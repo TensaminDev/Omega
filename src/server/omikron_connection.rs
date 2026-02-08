@@ -887,6 +887,61 @@ impl OmikronConnection {
             }
             return;
         }
+
+        // NOTIFICATIONS
+        if cv.is_type(CommunicationType::get_notifications) {
+            if let Some(JsonValue::Number(user_id)) = cv.get_data(DataTypes::user_id) {
+                if let Ok(notifications) =
+                    sql::get_notifications(user_id.as_fixed_point_i64(0).unwrap()).await
+                {
+                    let mut json_array = Vec::new();
+                    for (sender, amount) in notifications {
+                        let mut obj = JsonValue::new_object();
+                        let _ = obj.insert("sender", JsonValue::from(sender));
+                        let _ = obj.insert("amount", JsonValue::from(amount));
+                        json_array.push(obj);
+                    }
+                    let response = CommunicationValue::new(CommunicationType::get_notifications)
+                        .with_id(cv.get_id())
+                        .add_array(DataTypes::notifications, json_array);
+                    self.send_message(&response).await;
+                }
+            }
+        }
+        if cv.is_type(CommunicationType::read_notification) {
+            if let (Some(JsonValue::Number(user_id)), Some(JsonValue::Number(other_id))) = (
+                cv.get_data(DataTypes::receiver_id),
+                cv.get_data(DataTypes::sender_id),
+            ) {
+                if let Ok(_) = sql::read_notification(
+                    user_id.as_fixed_point_i64(0).unwrap(),
+                    other_id.as_fixed_point_i64(0).unwrap(),
+                )
+                .await
+                {
+                    let response = CommunicationValue::new(CommunicationType::read_notification)
+                        .with_id(cv.get_id());
+                    self.send_message(&response).await;
+                }
+            }
+        }
+        if cv.is_type(CommunicationType::push_notification) {
+            if let (Some(JsonValue::Number(user_id)), Some(JsonValue::Number(other_id))) = (
+                cv.get_data(DataTypes::receiver_id),
+                cv.get_data(DataTypes::sender_id),
+            ) {
+                if let Ok(_) = sql::add_notification(
+                    user_id.as_fixed_point_i64(0).unwrap(),
+                    other_id.as_fixed_point_i64(0).unwrap(),
+                )
+                .await
+                {
+                    let response = CommunicationValue::new(CommunicationType::push_notification)
+                        .with_id(cv.get_id());
+                    self.send_message(&response).await;
+                }
+            }
+        }
     }
 
     async fn send_error_response(&self, message_id: &Uuid, error_type: CommunicationType) {
