@@ -4,8 +4,9 @@ use futures::StreamExt;
 use hyper::upgrade::OnUpgrade;
 use hyper_util::rt::TokioIo;
 use tokio_tungstenite::WebSocketStream;
-use tungstenite::Message;
+use tungstenite::{Message, Utf8Bytes};
 
+use crate::data::communication::{CommunicationType, CommunicationValue};
 use crate::log;
 use crate::server::omikron_connection::OmikronConnection;
 
@@ -40,30 +41,62 @@ pub fn handle(path: String, upgrades: OnUpgrade) {
     });
 }
 pub async fn start_connecteable_handler(connection: Arc<OmikronConnection>) {
+    use futures::SinkExt;
+    use tokio::time::Duration;
+
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
     loop {
-        let msg = match {
-            let mut receiver = connection.receiver.write().await;
-            receiver.next().await
-        } {
-            Some(Ok(msg)) => msg,
-            Some(Err(e)) => {
+        let mut receiver = connection.receiver.write().await;
+
+        match tokio::time::timeout(IDLE_TIMEOUT, receiver.next()).await {
+            Ok(Some(Ok(msg))) => {
+                // Drop the lock so other tasks can use the receiver if needed,
+                // and so we can handle the message without holding the lock.
+                drop(receiver);
+
+                match msg {
+                    Message::Text(text) => {
+                        let conn_clone = connection.clone();
+                        tokio::spawn(async move {
+                            conn_clone.handle_message(text.to_string()).await;
+                        });
+                    }
+                    Message::Close(_) => {
+                        break;
+                    }
+                    Message::Pong(_) => {
+                        // Received a pong, connection is alive.
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(Err(e))) => {
                 log!("WS Error: {}", e);
                 break;
             }
-            _ => break,
-        };
-
-        match msg {
-            Message::Text(text) => {
-                let conn_clone = connection.clone();
-                tokio::spawn(async move {
-                    conn_clone.handle_message(text.to_string()).await;
-                });
-            }
-            Message::Close(_) => {
+            Ok(None) => {
+                // Stream is closed
                 break;
             }
-            _ => {}
+            Err(_) => {
+                // Timeout, we need to send a ping.
+                // Drop receiver lock before acquiring sender lock to avoid deadlock.
+                drop(receiver);
+                log!("WebSocket connection is idle. Sending a ping.");
+                let mut sender = connection.sender.write().await;
+                if let Err(e) = sender
+                    .send(Message::Text(Utf8Bytes::from(
+                        CommunicationValue::new(CommunicationType::ping)
+                            .to_json()
+                            .to_string(),
+                    )))
+                    .await
+                {
+                    log!("Failed to send ping: {}. Closing connection.", e);
+                    break;
+                }
+            }
         }
     }
     connection.handle_close().await;
