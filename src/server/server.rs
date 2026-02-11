@@ -1,18 +1,16 @@
-use crate::log;
-use crate::server::api;
-use crate::server::short_link::get_short_link;
-use crate::server::socket;
-
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
+use futures::StreamExt;
 use futures_util::TryFutureExt;
 use http_body_util::BodyExt;
 use http_body_util::Full;
+use hyper::server::conn::http2;
 use hyper::{Method, StatusCode};
 use hyper::{
     Request as HttpRequest, Response as HttpResponse, body::Incoming, server::conn::http1, upgrade,
 };
+use hyper_util::rt::TokioExecutor;
 use hyper_util::rt::tokio::TokioIo;
 use hyper_util::service::TowerToHyperService;
 use pnet::datalink::NetworkInterface;
@@ -20,19 +18,22 @@ use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha1::{Digest, Sha1};
 use std::error::Error;
-use std::fs::{self, File};
-use std::io::{self, BufReader, ErrorKind};
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::io::{self, BufReader};
+use std::net::{IpAddr, SocketAddr};
 use std::result::Result::Ok;
 use std::sync::Arc;
 use std::{future::Future, pin::Pin, time::Duration};
-
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
 
+use crate::log;
+use crate::server::api;
+use crate::server::short_link::get_short_link;
+use crate::server::socket;
+use crate::util::file_util::load_file_buf;
 #[derive(Clone)]
 struct HttpService {
     peer_addr: SocketAddr,
@@ -51,7 +52,7 @@ impl Service<HttpRequest<Incoming>> for HttpService {
     }
 
     fn call(&mut self, req: HttpRequest<Incoming>) -> Self::Future {
-        let _peer_ip = self.peer_addr.ip();
+        let peer_ip = self.peer_addr.ip();
 
         let (parts, body) = req.into_parts();
 
@@ -64,20 +65,12 @@ impl Service<HttpRequest<Incoming>> for HttpService {
                 && method == Method::GET
                 && headers
                     .get("connection")
-                    .map(|v| {
-                        v.to_str()
-                            .unwrap_or("")
-                            .split(',')
-                            .any(|s| s.trim().eq_ignore_ascii_case("upgrade"))
-                    })
+                    .map(|v| v.to_str().unwrap_or("").contains("Upgrade"))
                     .unwrap_or(false)
-                && headers
-                    .get("upgrade")
-                    .map(|v| v.to_str().unwrap_or("").eq_ignore_ascii_case("websocket"))
-                    .unwrap_or(false);
+                && headers.get("upgrade").map(|v| v.to_str().unwrap_or("")) == Some("websocket");
 
             if is_websocket_upgrade {
-                log!("Attempting WebSocket upgrade on {}", path);
+                log!("Attempting WebSocket upgrade on /ws");
 
                 if let Some(sec_websocket_key) = headers.get("sec-websocket-key") {
                     let sec_websocket_key = sec_websocket_key.to_str().unwrap_or("").to_string();
@@ -92,11 +85,8 @@ impl Service<HttpRequest<Incoming>> for HttpService {
                         .unwrap();
                     let req_for_upgrade = HttpRequest::from_parts(parts, body);
                     let upgrades = upgrade::on(req_for_upgrade);
-                    log!("Handling WebSocket upgrade");
 
                     socket::handle(path, upgrades);
-
-                    log!("Handled WebSocket connection initiation");
                     Ok(response)
                 } else {
                     log!("No Sec-WebSocket-Key found in request headers");
@@ -107,19 +97,8 @@ impl Service<HttpRequest<Incoming>> for HttpService {
                     Ok(response)
                 }
             } else if path.starts_with("/api") {
-                let whole_body = match body.collect().await {
-                    Ok(collected) => collected,
-                    Err(e) => {
-                        log!("Error collecting body: {}", e);
-                        return Ok(HttpResponse::builder()
-                            .status(StatusCode::INTERNAL_SERVER_ERROR)
-                            .body(Full::new(Bytes::from(format!(
-                                "Failed to read body: {}",
-                                e
-                            ))))
-                            .unwrap());
-                    }
-                };
+                let whole_body =
+                    tokio::time::timeout(Duration::from_secs(10), body.collect()).await??;
                 let bytes = whole_body.to_bytes();
 
                 let body_string: Option<String> = match String::from_utf8(bytes.to_vec()) {
@@ -145,11 +124,27 @@ impl Service<HttpRequest<Incoming>> for HttpService {
                     Ok(response)
                 }
             } else {
-                let response = HttpResponse::builder()
-                    .status(StatusCode::BAD_REQUEST)
-                    .body(Full::new(Bytes::from("No path provided")))
-                    .unwrap();
-                Ok(response)
+                let whole_body = match body.collect().await {
+                    Ok(collected) => collected,
+                    Err(e) => {
+                        log!("Error collecting body: {}", e);
+                        return Ok(HttpResponse::builder()
+                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                            .body(Full::new(Bytes::from(format!(
+                                "Failed to read body: {}",
+                                e
+                            ))))
+                            .unwrap());
+                    }
+                };
+                let bytes = whole_body.to_bytes();
+
+                let body_string: Option<String> = match String::from_utf8(bytes.to_vec()) {
+                    Ok(s) => Some(s),
+                    Err(_) => None,
+                };
+
+                Ok(api::handle(&path, headers, body_string).await)
             }
         };
 
@@ -162,8 +157,58 @@ impl Service<HttpRequest<Incoming>> for HttpService {
     }
 }
 
+pub fn is_local_network(addr: IpAddr) -> bool {
+    match addr {
+        IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            if octets[0] == 10 {
+                return true;
+            }
+            if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+                return true;
+            }
+            if octets[0] == 192 && octets[1] == 168 {
+                return true;
+            }
+            if octets[0] == 127 {
+                return true;
+            }
+            if octets[0] == 169 && octets[1] == 254 {
+                return true;
+            }
+
+            false
+        }
+
+        IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            if (segments[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            if v6.is_loopback() {
+                return true;
+            }
+
+            false
+        }
+    }
+}
+
 async fn run_http_server(port: u16) -> bool {
-    let ip = "0.0.0.0".to_string();
+    let mut ip = "0.0.0.0".to_string();
+    for iface in pnet::datalink::interfaces() {
+        let iface: NetworkInterface = iface;
+        if iface.ips.len() > 0 {
+            let ipsv = format!("{}", iface.ips[0]);
+            let ips: &str = ipsv.split('/').next().unwrap();
+            if format!("{}", ips).starts_with("10.") || format!("{}", ips).starts_with("192.") {
+                ip = ips.to_string();
+            }
+        }
+    }
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await;
     if let Err(e) = listener {
         log!("Failed to bind to port {}: {:?}", port, e);
@@ -176,28 +221,42 @@ async fn run_http_server(port: u16) -> bool {
         port
     );
 
+    // Create a broadcast channel for graceful shutdown signal
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     tokio::spawn(async move {
         loop {
             tokio::select! {
+                // Monitor for shutdown signal
+                _ = async {
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                } => {
+                    log!("Standard Server received shutdown signal.");
+                    // Send kill signal to all active connection tasks
+                    let _ = shutdown_tx.send(());
+                    break;
+                }
 
+                // Accept new connections
                 accepted = listener.accept() => {
                     match accepted {
                         std::result::Result::Ok((stream, addr)) => {
-                            let service = HttpService { peer_addr: addr };
+                            let service = HttpService {  peer_addr: addr };
                             let io = TokioIo::new(stream);
 
+                            // Subscribe to the shutdown signal for this specific connection
                             let mut rx = shutdown_tx.subscribe();
 
                             tokio::spawn(async move {
-                                // Prepare the connection future
-                                let conn = http1::Builder::new()
-                                    .preserve_header_case(true)
-                                    .title_case_headers(true)
-                                    .serve_connection(io, TowerToHyperService::new(service))
-                                    .with_upgrades();
+                                use hyper::server::conn::http2;
 
+                                let conn = http2::Builder::new(TokioExecutor::new())
+                                    .serve_connection(io, TowerToHyperService::new(service));
+
+
+                                // Wait for either the connection to finish naturally OR the shutdown signal
                                 tokio::select! {
                                     res = conn => {
                                         if let Err(err) = res {
@@ -225,6 +284,8 @@ async fn run_http_server(port: u16) -> bool {
                 }
             }
         }
+
+        log!("Standard Server shutdown complete.");
     });
 
     true
@@ -237,7 +298,7 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
         let iface: NetworkInterface = iface;
         let ipsv = format!("{}", iface.ips[0]);
         let ips: &str = ipsv.split('/').next().unwrap();
-        log!("{}", ips.to_string());
+        log!("{}", ips);
         if format!("{}", ips).starts_with("10.") {
             ip = ips.to_string();
         }
@@ -257,11 +318,13 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
         port
     );
 
+    // Create a broadcast channel for graceful shutdown signal
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     tokio::spawn(async move {
         loop {
             tokio::select! {
+                // Monitor for shutdown signal
                 _ = async {
                     loop {
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -273,6 +336,7 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
                     break;
                 }
 
+                // Accept new connections
                 accepted = listener.accept() => {
                     match accepted {
                         std::result::Result::Ok((stream, addr)) => {
@@ -295,12 +359,14 @@ async fn run_tls_server(port: u16, tls_config: Arc<ServerConfig>) -> bool {
                                 };
                                 let io = TokioIo::new(tls_stream);
 
+                                // Prepare connection future
                                 let conn = http1::Builder::new()
                                     .preserve_header_case(true)
                                     .title_case_headers(true)
                                     .serve_connection(io, TowerToHyperService::new(service))
                                     .with_upgrades();
 
+                                // Wait for either the connection to finish naturally OR the shutdown signal
                                 tokio::select! {
                                     res = conn => {
                                         if let Err(err) = res {
@@ -352,37 +418,7 @@ fn calculate_accept_key(key: &str) -> String {
     sha1.update(key.as_bytes());
     sha1.update(websocket_guid.as_bytes());
     let result = sha1.finalize();
-    STANDARD.encode(result)
-}
-
-pub fn load_file_buf(path: &str, name: &str) -> io::Result<BufReader<File>> {
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    let dir = exe
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_string_lossy()
-        .to_string();
-    let dir = Path::new(&dir).join(path);
-    let file_path = dir.join(name);
-
-    if !dir.exists() {
-        if let Err(_) = fs::create_dir_all(&dir) {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Directory creation failed",
-            ));
-        }
-    }
-
-    if !file_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "File creation failed",
-        ));
-    }
-
-    let file = File::open(&file_path)?;
-    Ok(BufReader::new(file))
+    STANDARD.encode(result) // Base64 encode the result
 }
 
 /// Loads TLS config. Returns Ok(None) if cert files are not found, and an error if parsing fails.
@@ -397,7 +433,7 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
             log!("TLS certificate 'certs/cert.pem' not found.");
             return Ok(None);
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e.into()), // Other IO error
     };
 
     let key_file_buf = match key_file_res {
@@ -406,7 +442,7 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
             log!("TLS key 'certs/cert.key' not found.");
             return Ok(None);
         }
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(e.into()), // Other IO error
     };
 
     // Continue with configuration if both files were found
@@ -417,12 +453,12 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
     // PKCS8
     let mut key_reader = BufReader::new(key_file_buf);
     let mut key_ders = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
-        .map(|r| r.map(Into::into))
+        .map(|r| r.map(Into::into)) // Explicit conversion
         .collect::<Result<Vec<PrivateKeyDer>, io::Error>>()?;
 
     if key_ders.is_empty() {
         // RSA
-        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?);
+        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?); // Re-read key file
         key_ders = rustls_pemfile::rsa_private_keys(&mut key_reader)
             .map(|r| r.map(Into::into))
             .collect::<Result<Vec<PrivateKeyDer>, io::Error>>()?;
@@ -430,20 +466,21 @@ fn load_tls_config() -> Result<Option<Arc<ServerConfig>>, Box<dyn Error>> {
 
     if key_ders.is_empty() {
         // EC
-        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?);
+        key_reader = BufReader::new(load_file_buf("certs", "cert.key")?); // Re-read key file
         key_ders = rustls_pemfile::ec_private_keys(&mut key_reader)
             .map(|r| r.map(Into::into))
             .collect::<Result<Vec<PrivateKeyDer>, io::Error>>()?;
     }
 
     if key_ders.is_empty() {
-        return Err("No valid private keys found in key file (Tried PKCS8, RSA and EC).".into());
+        return Err("No private keys found in key file. (Tried PKCS8, RSA, and EC)".into());
     }
 
-    let config = rustls::ServerConfig::builder()
+    let mut config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(cert_ders, key_ders.remove(0))
-        .map_err(|e| io::Error::new(ErrorKind::Other, e.to_string()))?;
+        .with_single_cert(cert_ders, key_ders.remove(0))?;
+
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(Some(Arc::new(config)))
 }

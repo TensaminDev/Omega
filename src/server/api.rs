@@ -3,17 +3,21 @@ use crate::get_public_key;
 use crate::server::omikron_manager::get_random_omikron;
 use crate::sql::sql;
 use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
+use crate::util::file_util::load_file_vec;
 use crate::{
     sql::sql::{get_by_user_id, get_omikron_by_id},
     util::crypto_helper::public_key_to_base64,
 };
 use axum::http::HeaderValue;
 use base64::Engine as _;
-use http_body_util::Full;
-use hyper::body::Bytes;
+use http_body_util::{Full, StreamBody};
+use hyper::body::{Body, Bytes, Frame};
+use hyper::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{HeaderMap, Response as HttpResponse, StatusCode};
 use json::JsonValue;
 use json::number::Number;
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 
 pub async fn handle(
     path: &str,
@@ -31,12 +35,31 @@ pub async fn handle(
     } else {
         None
     };
-    // api/
-    //   get/
-    //     omikron/
-    //     id/
     let (status, body_text) = if path_parts.len() >= 2 {
         match path_parts[1] {
+            "download" => {
+                if path_parts.len() == 3 && path_parts[2] == "iota_frontend" {
+                    let file: Bytes = load_file_vec("downloads", "iota_frontend.zip")
+                        .unwrap()
+                        .into();
+                    let len = file.len();
+                    let body = Full::new(file);
+
+                    let response = HttpResponse::builder()
+                        .status(StatusCode::OK)
+                        .header(CONTENT_TYPE, "application/zip")
+                        .header(
+                            CONTENT_DISPOSITION,
+                            "attachment; filename=\"iota_frontend.zip\"",
+                        )
+                        .header(CONTENT_LENGTH, len)
+                        .body(body)
+                        .unwrap();
+                    return response;
+                } else {
+                    bad_request()
+                }
+            }
             "get" => match path_parts[2] {
                 // api/get/omikron -> any omikron
                 // api/get/omikron/<id> -> omikron for id (user / iota / omikron)
