@@ -10,14 +10,12 @@ use crate::{
 };
 use axum::http::HeaderValue;
 use base64::Engine as _;
-use http_body_util::{Full, StreamBody};
-use hyper::body::{Body, Bytes, Frame};
+use http_body_util::Full;
+use hyper::body::Bytes;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{HeaderMap, Response as HttpResponse, StatusCode};
 use json::JsonValue;
 use json::number::Number;
-use tokio::fs::File;
-use tokio_util::io::ReaderStream;
 
 pub async fn handle(
     path: &str,

@@ -6,29 +6,26 @@ use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get
 use crate::sql::user_online_tracker::{self};
 use crate::util::crypto_helper::encrypt;
 use crate::util::logger::PrintType;
-use crate::{get_private_key, get_public_key, log_in, log_out};
+use crate::{get_private_key, get_public_key, log_err, log_in, log_out};
+use axum::extract::ws::WebSocket;
+use axum::extract::ws::{Message, Utf8Bytes};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
-use futures::SinkExt;
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
-use hyper::upgrade::Upgraded;
-use hyper_util::rt::TokioIo;
+use futures_util::SinkExt;
 use json::JsonValue;
 use json::number::Number;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio_tungstenite::WebSocketStream;
-use tungstenite::Message;
-use tungstenite::Utf8Bytes;
 use uuid::Uuid;
 use x448::PublicKey;
 
 pub struct OmikronConnection {
-    pub sender: Arc<RwLock<SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>>>,
-    pub receiver: Arc<RwLock<SplitStream<WebSocketStream<TokioIo<Upgraded>>>>>,
+    pub sender: Arc<RwLock<SplitSink<WebSocket, Message>>>,
+    pub receiver: Arc<RwLock<SplitStream<WebSocket>>>,
     pub omikron_id: Arc<RwLock<i64>>,
     pub pub_key: Arc<RwLock<Option<Vec<u8>>>>,
     identified: Arc<RwLock<bool>>,
@@ -43,8 +40,8 @@ pub struct OmikronConnection {
 
 impl OmikronConnection {
     pub fn new(
-        sender: SplitSink<WebSocketStream<TokioIo<Upgraded>>, Message>,
-        receiver: SplitStream<WebSocketStream<TokioIo<Upgraded>>>,
+        sender: SplitSink<WebSocket, Message>,
+        receiver: SplitStream<WebSocket>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sender: Arc::new(RwLock::new(sender)),
@@ -66,19 +63,23 @@ impl OmikronConnection {
                 *self.omikron_id.read().await,
                 PrintType::Omikron,
                 "{}",
-                message_text
+                cv.to_json().to_string()
             );
         }
-        let _ = sender.send(message_text).await;
+        if let Err(e) = sender.send(message_text).await {
+            log_err!(
+                *self.omikron_id.read().await,
+                PrintType::Omikron,
+                "WebSocket send error: {}",
+                e
+            );
+        }
     }
     pub async fn get_omikron_id(&self) -> i64 {
         *self.omikron_id.read().await
     }
     pub async fn is_identified(&self) -> bool {
         *self.identified.read().await && *self.challenged.read().await
-    }
-    pub async fn get_public_key(&self) -> PublicKey {
-        PublicKey::from_bytes(self.pub_key.read().await.as_ref().unwrap()).unwrap()
     }
 
     pub async fn handle_message(self: Arc<Self>, message: String) {
@@ -619,7 +620,6 @@ impl OmikronConnection {
 
             if let Some(public_key) = cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()) {
                 if let Some(iota_id) = iota_id_opt {
-                    // Existing logic to update iota
                     match sql::register_complete_iota(iota_id, public_key.to_string()).await {
                         Ok(_) => {
                             let response = CommunicationValue::new(CommunicationType::success)
@@ -792,7 +792,7 @@ impl OmikronConnection {
             ) {
                 match sql::get_by_user_id(user_id).await {
                     Ok(user) => {
-                        let current_token = user.11; // token is the 12th element (index 11)
+                        let current_token = user.11;
                         if current_token == reset_token {
                             let mut success = true;
                             let mut error_message = String::new();
@@ -824,7 +824,6 @@ impl OmikronConnection {
                         } else {
                             self.send_error_response(
                                 &cv.get_id(),
-                                // Using this for invalid token
                                 CommunicationType::error_invalid_challenge,
                             )
                             .await;
