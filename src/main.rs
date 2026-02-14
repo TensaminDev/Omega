@@ -43,8 +43,7 @@ async fn main() {
     } else {
         log!("  Users");
     }
-    server::server::start(9187, 9188).await;
-    log!("  API Server on 9187");
-    log!("  WS Server on 9188");
+    let _ = server::server::start(9187).await;
+
     tokio::signal::ctrl_c().await.unwrap();
 }

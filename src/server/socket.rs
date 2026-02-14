@@ -1,99 +1,129 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
-use futures::StreamExt;
+use actix::{Actor, ActorContext, AsyncContext, StreamHandler};
+use actix_web_actors::ws;
 
 use crate::data::communication::{CommunicationType, CommunicationValue};
 use crate::log;
 use crate::server::omikron_connection::OmikronConnection;
 
-pub fn handle(path: String, upgrades: WebSocket) {
-    tokio::spawn(async move {
-        log!(
-            "[ws] Spawning new task to handle WebSocket upgrade for path: {}",
-            path
-        );
-        log!("[ws] WebSocket upgrade successful for path: {}", path);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-        log!(
-            "[ws] WebSocket handshake successful, handling connection for {}",
-            path
-        );
+use actix::Message;
 
-        let (writer, reader) = upgrades.split();
-        if path == "/ws/omikron" {
-            let connection = OmikronConnection::new(writer, reader);
-            tokio::spawn(start_connecteable_handler(connection));
-        }
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct WsSendMessage(pub String);
 
-        log!(
-            "[ws] WebSocket handling task for path: {} is finished.",
-            path
-        );
-    });
+impl actix::Handler<WsSendMessage> for WsSession {
+    type Result = ();
+
+    fn handle(&mut self, msg: WsSendMessage, ctx: &mut Self::Context) {
+        ctx.text(msg.0);
+    }
 }
-pub async fn start_connecteable_handler(connection: Arc<OmikronConnection>) {
-    use futures::SinkExt;
-    use tokio::time::Duration;
 
-    const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub struct WsSession {
+    path: String,
+    last_heartbeat: Instant,
+    omikron: Option<Arc<OmikronConnection>>,
+}
 
-    log!("[ws_handler] Starting connection handler loop.");
-    loop {
-        let mut receiver_guard = connection.receiver.write().await;
-
-        match tokio::time::timeout(IDLE_TIMEOUT, receiver_guard.next()).await {
-            Ok(Some(Ok(msg))) => {
-                drop(receiver_guard);
-
-                match msg {
-                    Message::Text(text) => {
-                        let conn_clone = connection.clone();
-                        tokio::spawn(async move {
-                            conn_clone.handle_message(text.to_string()).await;
-                        });
-                    }
-                    Message::Close(_) => {
-                        log!("[ws_handler] Received 'Close' message. Breaking loop.");
-                        break;
-                    }
-                    Message::Pong(_) => {
-                        log!("[ws_handler] Received 'Pong'. Connection is alive.");
-                    }
-                    _ => {
-                        log!("[ws_handler] Received unhandled message type.");
-                    }
-                }
-            }
-            Ok(Some(Err(e))) => {
-                log!("[ERROR] WS Error: {}. Breaking loop.", e);
-                break;
-            }
-            Ok(_) => {
-                log!("[ws_handler] WebSocket stream closed by peer. Breaking loop.");
-                break;
-            }
-            Err(_) => {
-                drop(receiver_guard);
-                log!("[ws_handler] Timeout: Dropped receiver lock. Sending a ping.");
-                let mut sender = connection.sender.write().await;
-                log!("[ws_handler] Acquired sender lock for ping.");
-                if let Err(e) = sender
-                    .send(Message::Text(Utf8Bytes::from(
-                        CommunicationValue::new(CommunicationType::ping)
-                            .to_json()
-                            .to_string(),
-                    )))
-                    .await
-                {
-                    log!("[ERROR] Failed to send ping: {}. Closing connection.", e);
-                    break;
-                }
-                log!("[ws_handler] Ping sent successfully.");
-            }
+impl WsSession {
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            last_heartbeat: Instant::now(),
+            omikron: None,
         }
     }
-    log!("[ws_handler] Connection handler loop finished.");
-    connection.handle_close().await;
-    log!("[ws_handler] Connection closed.");
+
+    fn start_heartbeat(&self, ctx: &mut ws::WebsocketContext<Self>) {
+        ctx.run_interval(Duration::from_secs(5), |act, ctx| {
+            if Instant::now().duration_since(act.last_heartbeat) > IDLE_TIMEOUT {
+                log!("[ws_handler] Heartbeat failed. Disconnecting.");
+                ctx.close(None);
+                ctx.stop();
+                return;
+            }
+
+            let ping = CommunicationValue::new(CommunicationType::ping)
+                .to_json()
+                .to_string();
+
+            ctx.text(ping);
+        });
+    }
+}
+
+impl Actor for WsSession {
+    type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.start_heartbeat(ctx);
+
+        if self.path == "omikron" {
+            let addr = ctx.address();
+            let connection = OmikronConnection::new(addr);
+            self.omikron = Some(connection);
+        }
+    }
+
+    fn stopped(&mut self, _: &mut Self::Context) {
+        log!(
+            "[ws] WebSocket handling task for path: {} is finished.",
+            self.path
+        );
+
+        if let Some(conn) = &self.omikron {
+            let conn = conn.clone();
+            actix_rt::spawn(async move {
+                conn.handle_close().await;
+            });
+        }
+    }
+}
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WsSession {
+    fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match msg {
+            Ok(ws::Message::Text(text)) => {
+                self.last_heartbeat = Instant::now();
+
+                if let Some(conn) = &self.omikron {
+                    let conn_clone = conn.clone();
+                    actix_rt::spawn(async move {
+                        conn_clone.handle_message(text.to_string()).await;
+                    });
+                }
+            }
+
+            Ok(ws::Message::Ping(msg)) => {
+                self.last_heartbeat = Instant::now();
+                ctx.pong(&msg);
+            }
+
+            Ok(ws::Message::Pong(_)) => {
+                self.last_heartbeat = Instant::now();
+                log!("[ws_handler] Received Pong. Connection alive.");
+            }
+
+            Ok(ws::Message::Close(reason)) => {
+                log!("[ws_handler] Received Close. Disconnecting.");
+                ctx.close(reason);
+                ctx.stop();
+            }
+
+            Ok(ws::Message::Binary(_)) => {
+                log!("[ws_handler] Binary message ignored.");
+            }
+
+            Err(e) => {
+                log!("[ERROR] WS Error: {}. Closing.", e);
+                ctx.stop();
+            }
+
+            _ => {}
+        }
+    }
 }
