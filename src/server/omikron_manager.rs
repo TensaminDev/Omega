@@ -24,11 +24,3 @@ pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
         return Err(());
     }
 }
-
-pub async fn get_omikron(omikron_id: i64) -> Option<Arc<OmikronConnection>> {
-    if let Some(omikron) = OMIKRON_CONNECTIONS.get(&omikron_id) {
-        Some(omikron.clone())
-    } else {
-        None
-    }
-}

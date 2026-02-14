@@ -1,51 +1,31 @@
 use std::sync::Arc;
 
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::StreamExt;
-use hyper::upgrade::OnUpgrade;
-use hyper_util::rt::TokioIo;
-use tokio_tungstenite::WebSocketStream;
-use tungstenite::{Message, Utf8Bytes};
 
 use crate::data::communication::{CommunicationType, CommunicationValue};
 use crate::log;
 use crate::server::omikron_connection::OmikronConnection;
 
-pub fn handle(path: String, upgrades: OnUpgrade) {
+pub fn handle(path: String, upgrades: WebSocket) {
     tokio::spawn(async move {
         log!(
             "[ws] Spawning new task to handle WebSocket upgrade for path: {}",
             path
         );
-        match upgrades.await {
-            Ok(upgraded_stream) => {
-                log!("[ws] WebSocket upgrade successful for path: {}", path);
-                let raw_stream = TokioIo::new(upgraded_stream);
+        log!("[ws] WebSocket upgrade successful for path: {}", path);
 
-                let ws_stream = WebSocketStream::from_raw_socket(
-                    raw_stream,
-                    tungstenite::protocol::Role::Server,
-                    None,
-                )
-                .await;
-                log!(
-                    "[ws] WebSocket handshake successful, handling connection for {}",
-                    path
-                );
+        log!(
+            "[ws] WebSocket handshake successful, handling connection for {}",
+            path
+        );
 
-                let (writer, reader) = ws_stream.split();
-                if path == "/ws/omikron" {
-                    let connection = OmikronConnection::new(writer, reader);
-                    tokio::spawn(start_connecteable_handler(connection));
-                }
-            }
-            Err(e) => {
-                log!(
-                    "[ERROR] WebSocket upgrade failed for path {}: {:?}",
-                    path,
-                    e
-                );
-            }
+        let (writer, reader) = upgrades.split();
+        if path == "/ws/omikron" {
+            let connection = OmikronConnection::new(writer, reader);
+            tokio::spawn(start_connecteable_handler(connection));
         }
+
         log!(
             "[ws] WebSocket handling task for path: {} is finished.",
             path
@@ -89,7 +69,7 @@ pub async fn start_connecteable_handler(connection: Arc<OmikronConnection>) {
                 log!("[ERROR] WS Error: {}. Breaking loop.", e);
                 break;
             }
-            Ok(None) => {
+            Ok(_) => {
                 log!("[ws_handler] WebSocket stream closed by peer. Breaking loop.");
                 break;
             }
