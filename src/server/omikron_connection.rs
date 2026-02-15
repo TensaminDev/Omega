@@ -213,12 +213,14 @@ impl OmikronConnection {
 
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
+            log_in!(PrintType::Omega, "User connected");
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
                 user_online_tracker::track_user_status(user_id, UserStatus::online, omikron_id);
             }
             return;
         }
         if cv.is_type(CommunicationType::user_disconnected) {
+            log_in!(PrintType::Omega, "User disconnected");
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
                 if let Some(status) = user_online_tracker::get_user_status(user_id) {
                     user_online_tracker::track_user_status(
@@ -260,6 +262,7 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::iota_disconnected) {
+            log_in!(PrintType::Omega, "IOTA disconnected");
             if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
                 let iota_offline =
                     user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
@@ -320,7 +323,7 @@ impl OmikronConnection {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_user_data)
                                 .with_id(cv.get_id())
-                                .add_data_str(DataTypes::username, username)
+                                .add_data_str(DataTypes::username, username.clone())
                                 .add_data_str(DataTypes::public_key, public_key)
                                 .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
                                 .add_data(
@@ -337,13 +340,21 @@ impl OmikronConnection {
                                 );
 
                         if let Some(display) = display {
-                            response = response.add_data_str(DataTypes::display, display);
+                            if display.is_empty() {
+                                response = response.add_data_str(DataTypes::display, username);
+                            } else {
+                                response = response.add_data_str(DataTypes::display, display);
+                            }
                         }
                         if let Some(status) = status {
-                            response = response.add_data_str(DataTypes::status, status);
+                            if !status.is_empty() {
+                                response = response.add_data_str(DataTypes::status, status);
+                            }
                         }
                         if let Some(about) = about {
-                            response = response.add_data_str(DataTypes::about, about);
+                            if !about.is_empty() {
+                                response = response.add_data_str(DataTypes::about, about);
+                            }
                         }
                         if let Some(avatar) = avatar {
                             response =
@@ -405,7 +416,7 @@ impl OmikronConnection {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_user_data)
                                 .with_id(cv.get_id())
-                                .add_data_str(DataTypes::username, username)
+                                .add_data_str(DataTypes::username, username.clone())
                                 .add_data_str(DataTypes::public_key, public_key)
                                 .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
                                 .add_data(
@@ -422,13 +433,21 @@ impl OmikronConnection {
                                 );
 
                         if let Some(display) = display {
-                            response = response.add_data_str(DataTypes::display, display);
+                            if display.is_empty() {
+                                response = response.add_data_str(DataTypes::display, username);
+                            } else {
+                                response = response.add_data_str(DataTypes::display, display);
+                            }
                         }
                         if let Some(status) = status {
-                            response = response.add_data_str(DataTypes::status, status);
+                            if !status.is_empty() {
+                                response = response.add_data_str(DataTypes::status, status);
+                            }
                         }
                         if let Some(about) = about {
-                            response = response.add_data_str(DataTypes::about, about);
+                            if !about.is_empty() {
+                                response = response.add_data_str(DataTypes::about, about);
+                            }
                         }
                         if let Some(avatar) = avatar {
                             response =
