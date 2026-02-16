@@ -1,106 +1,83 @@
-use axum::{
-    Router,
-    body::Body,
-    extract::{ConnectInfo, OriginalUri, Path, ws::WebSocketUpgrade},
-    response::{IntoResponse, Redirect},
-    routing::get,
+use crate::{
+    log,
+    server::{api, short_link::get_short_link, socket},
+    util::file_util::get_directory,
 };
 
-use pnet::datalink::NetworkInterface;
-use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::net::TcpListener;
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::header, web};
+use actix_web_actors::ws;
 
-use crate::log;
-use crate::server::api;
-use crate::server::short_link::get_short_link;
-use crate::server::socket;
+use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pemfile::{certs, pkcs8_private_keys};
 
-pub async fn start(port: u16) -> bool {
-    let app = Router::new()
-        .route("/ws/omikron", get(ws_handler))
-        .route("/direct/{short}", get(direct_handler))
-        .fallback(fallback_handler);
-    run_http_server(port, app).await
-}
+use std::fs::File;
+use std::io::BufReader;
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    OriginalUri(uri): OriginalUri,
-    ConnectInfo(_): ConnectInfo<SocketAddr>,
-) -> impl IntoResponse {
-    log!("Attempting WebSocket upgrade on {}", uri.path());
-    let path = uri.path().to_string();
+pub async fn start(port: u16) -> anyhow::Result<()> {
+    let mut cert_reader =
+        BufReader::new(File::open(format!("{}/certs/cert.pem", get_directory()))?);
 
-    ws.on_upgrade(async move |socket| socket::handle(path, socket))
-}
+    let mut key_reader = BufReader::new(File::open(format!("{}/certs/key.pem", get_directory()))?);
 
-async fn direct_handler(Path(short): Path<String>) -> impl IntoResponse {
-    match get_short_link(&short).await {
-        Ok(long) => Redirect::temporary(&long),
-        Err(_) => Redirect::temporary("https://tensamin.net"),
-    }
-}
+    let cert_chain: Vec<CertificateDer<'static>> =
+        certs(&mut cert_reader).collect::<Result<_, _>>()?;
 
-async fn fallback_handler(
-    OriginalUri(uri): OriginalUri,
-    headers: axum::http::HeaderMap,
-    body: Body,
-) -> impl IntoResponse {
-    let path = uri.path().to_string();
+    let mut keys: Vec<PrivateKeyDer<'static>> = pkcs8_private_keys(&mut key_reader)
+        .map(|res| res.map(Into::into))
+        .collect::<Result<_, _>>()?;
 
-    let whole_body = tokio::time::timeout(
-        Duration::from_secs(10),
-        axum::body::to_bytes(body, 1024 * 1024 * 10),
-    )
-    .await;
+    let key = keys.remove(0);
 
-    let body_string = match whole_body {
-        Ok(Ok(bytes)) => String::from_utf8(bytes.to_vec()).ok(),
-        _ => None,
-    };
+    let mut config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key)?;
 
-    api::handle(&path, headers, body_string).await
-}
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
-async fn run_http_server(port: u16, app: Router) -> bool {
-    let ip = find_local_ip();
-    let listener = match TcpListener::bind(format!("0.0.0.0:{}", port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            log!("Failed to bind to port {}: {:?}", port, e);
-            return false;
-        }
-    };
+    let addr = format!("0.0.0.0:{port}");
+    log!("  Server on {}", addr);
 
-    log!(
-        "Standard Server listening for HTTP and WS on {}:{}",
-        ip,
-        port
-    );
-
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .map(|_| true)
-    .unwrap_or_else(|e| {
-        log!("Server error: {}", e);
-        false
+    HttpServer::new(move || {
+        App::new()
+            .route("/api/{path:.*}", web::to(api_handler))
+            .route("/direct/{path:.*}", web::to(direct_handler))
+            .route("/ws/{path:.*}", web::get().to(ws_handler))
     })
+    .bind_rustls_0_23(addr, config)?
+    .run()
+    .await?;
+
+    Ok(())
+}
+async fn direct_handler(req: HttpRequest) -> impl Responder {
+    let path = req.uri().path().to_string();
+    let short = path.replace("/direct/", "");
+
+    if let Ok(long) = get_short_link(&short).await {
+        HttpResponse::TemporaryRedirect()
+            .append_header((header::LOCATION, long))
+            .finish()
+    } else {
+        HttpResponse::TemporaryRedirect()
+            .append_header((header::LOCATION, "https://tensamin.net"))
+            .finish()
+    }
+}
+async fn ws_handler(
+    req: HttpRequest,
+    stream: web::Payload,
+    path: web::Path<String>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let path = path.into_inner();
+    println!("WS handler reached: {}", path);
+
+    ws::start(socket::WsSession::new(path), &req, stream)
 }
 
-fn find_local_ip() -> String {
-    for iface in pnet::datalink::interfaces() {
-        let iface: NetworkInterface = iface;
-        if !iface.ips.is_empty() {
-            let ipsv = format!("{}", iface.ips[0]);
-            let ips: &str = ipsv.split('/').next().unwrap();
-            if ips.starts_with("10.") || ips.starts_with("192.") {
-                return ips.to_string();
-            }
-        }
-    }
-    "0.0.0.0".to_string()
+async fn api_handler(req: HttpRequest, body: web::Bytes) -> HttpResponse {
+    let path = req.uri().path().to_string();
+    let body_string = String::from_utf8_lossy(&body).to_string();
+
+    api::handle(&path, Some(body_string)).await
 }

@@ -43,7 +43,7 @@ async fn main() {
     } else {
         log!("  Users");
     }
-    server::server::start(9187).await;
-    log!("  Server");
+    let _ = server::server::start(9187).await;
+
     tokio::signal::ctrl_c().await.unwrap();
 }

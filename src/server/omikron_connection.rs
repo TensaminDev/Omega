@@ -1,19 +1,16 @@
 use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
 use crate::server::omikron_manager;
 use crate::server::short_link::add_short_link;
+use crate::server::socket::{WsSendMessage, WsSession};
 use crate::sql::connection_status::UserStatus;
 use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get_omikron_by_id};
 use crate::sql::user_online_tracker::{self};
 use crate::util::crypto_helper::encrypt;
 use crate::util::logger::PrintType;
-use crate::{get_private_key, get_public_key, log_err, log_in, log_out};
-use axum::extract::ws::WebSocket;
-use axum::extract::ws::{Message, Utf8Bytes};
+use crate::{get_private_key, get_public_key, log_in, log_out};
+use actix::Addr;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
-use futures::stream::SplitSink;
-use futures::stream::SplitStream;
-use futures_util::SinkExt;
 use json::JsonValue;
 use json::number::Number;
 use rand::Rng;
@@ -24,8 +21,7 @@ use uuid::Uuid;
 use x448::PublicKey;
 
 pub struct OmikronConnection {
-    pub sender: Arc<RwLock<SplitSink<WebSocket, Message>>>,
-    pub receiver: Arc<RwLock<SplitStream<WebSocket>>>,
+    pub ws_addr: Arc<RwLock<Addr<WsSession>>>,
     pub omikron_id: Arc<RwLock<i64>>,
     pub pub_key: Arc<RwLock<Option<Vec<u8>>>>,
     identified: Arc<RwLock<bool>>,
@@ -39,13 +35,9 @@ pub struct OmikronConnection {
 }
 
 impl OmikronConnection {
-    pub fn new(
-        sender: SplitSink<WebSocket, Message>,
-        receiver: SplitStream<WebSocket>,
-    ) -> Arc<Self> {
+    pub fn new(ws_addr: Addr<WsSession>) -> Arc<Self> {
         Arc::new(Self {
-            sender: Arc::new(RwLock::new(sender)),
-            receiver: Arc::new(RwLock::new(receiver)),
+            ws_addr: Arc::new(RwLock::new(ws_addr)),
             omikron_id: Arc::new(RwLock::new(0)),
             pub_key: Arc::new(RwLock::new(None)),
             identified: Arc::new(RwLock::new(false)),
@@ -56,25 +48,20 @@ impl OmikronConnection {
         })
     }
     pub async fn send_message(&self, cv: &CommunicationValue) {
-        let mut sender = self.sender.write().await;
-        let message_text = Message::Text(Utf8Bytes::from(cv.to_json().to_string()));
+        let text = cv.to_json().to_string();
+
         if !cv.is_type(CommunicationType::pong) {
             log_out!(
                 *self.omikron_id.read().await,
                 PrintType::Omikron,
                 "{}",
-                cv.to_json().to_string()
+                text
             );
         }
-        if let Err(e) = sender.send(message_text).await {
-            log_err!(
-                *self.omikron_id.read().await,
-                PrintType::Omikron,
-                "WebSocket send error: {}",
-                e
-            );
-        }
+
+        self.ws_addr.read().await.do_send(WsSendMessage(text));
     }
+
     pub async fn get_omikron_id(&self) -> i64 {
         *self.omikron_id.read().await
     }
@@ -226,6 +213,7 @@ impl OmikronConnection {
 
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
+            log_in!(PrintType::Omega, "User connected");
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
                 user_online_tracker::track_user_status(
                     user_id,
@@ -236,6 +224,7 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::user_disconnected) {
+            log_in!(PrintType::Omega, "User disconnected");
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
                 if let Some(status) = user_online_tracker::get_user_status(user_id) {
                     user_online_tracker::track_user_status(
@@ -277,6 +266,7 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::iota_disconnected) {
+            log_in!(PrintType::Omega, "IOTA disconnected");
             if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
                 let iota_offline =
                     user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
@@ -337,7 +327,7 @@ impl OmikronConnection {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_user_data)
                                 .with_id(cv.get_id())
-                                .add_data_str(DataTypes::username, username)
+                                .add_data_str(DataTypes::username, username.clone())
                                 .add_data_str(DataTypes::public_key, public_key)
                                 .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
                                 .add_data(
@@ -354,13 +344,21 @@ impl OmikronConnection {
                                 );
 
                         if let Some(display) = display {
-                            response = response.add_data_str(DataTypes::display, display);
+                            if display.is_empty() {
+                                response = response.add_data_str(DataTypes::display, username);
+                            } else {
+                                response = response.add_data_str(DataTypes::display, display);
+                            }
                         }
                         if let Some(status) = status {
-                            response = response.add_data_str(DataTypes::status, status);
+                            if !status.is_empty() {
+                                response = response.add_data_str(DataTypes::status, status);
+                            }
                         }
                         if let Some(about) = about {
-                            response = response.add_data_str(DataTypes::about, about);
+                            if !about.is_empty() {
+                                response = response.add_data_str(DataTypes::about, about);
+                            }
                         }
                         if let Some(avatar) = avatar {
                             response =
@@ -422,7 +420,7 @@ impl OmikronConnection {
                         let mut response =
                             CommunicationValue::new(CommunicationType::get_user_data)
                                 .with_id(cv.get_id())
-                                .add_data_str(DataTypes::username, username)
+                                .add_data_str(DataTypes::username, username.clone())
                                 .add_data_str(DataTypes::public_key, public_key)
                                 .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
                                 .add_data(
@@ -439,13 +437,21 @@ impl OmikronConnection {
                                 );
 
                         if let Some(display) = display {
-                            response = response.add_data_str(DataTypes::display, display);
+                            if display.is_empty() {
+                                response = response.add_data_str(DataTypes::display, username);
+                            } else {
+                                response = response.add_data_str(DataTypes::display, display);
+                            }
                         }
                         if let Some(status) = status {
-                            response = response.add_data_str(DataTypes::status, status);
+                            if !status.is_empty() {
+                                response = response.add_data_str(DataTypes::status, status);
+                            }
                         }
                         if let Some(about) = about {
-                            response = response.add_data_str(DataTypes::about, about);
+                            if !about.is_empty() {
+                                response = response.add_data_str(DataTypes::about, about);
+                            }
                         }
                         if let Some(avatar) = avatar {
                             response =
@@ -952,7 +958,6 @@ impl OmikronConnection {
         self.send_message(&error).await;
     }
     pub async fn close(&self) {
-        let mut sender = self.sender.write().await;
         if self.is_identified().await {
             let omikron_id = self.get_omikron_id().await;
             if omikron_id != 0 {
@@ -961,7 +966,6 @@ impl OmikronConnection {
                 user_online_tracker::untrack_omikron(omikron_id).await;
             }
         }
-        let _ = sender.close().await;
     }
     pub async fn handle_close(self: Arc<Self>) {
         if self.is_identified().await {
