@@ -227,7 +227,11 @@ impl OmikronConnection {
         // ONLINE STATUS TRACKING
         if cv.is_type(CommunicationType::user_connected) {
             if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                user_online_tracker::track_user_status(user_id, UserStatus::online, omikron_id);
+                user_online_tracker::track_user_status(
+                    user_id,
+                    UserStatus::user_online,
+                    omikron_id,
+                );
             }
             return;
         }
@@ -293,7 +297,7 @@ impl OmikronConnection {
                     if let Some(user_id) = user_id_json.as_i64() {
                         user_online_tracker::track_user_status(
                             user_id,
-                            UserStatus::online,
+                            UserStatus::user_online,
                             omikron_id,
                         );
                     }

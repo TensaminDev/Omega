@@ -39,7 +39,7 @@ async-tungstenite = { version = "0.32.0", features = [
     "verbose-logging",
     "webpki-roots",
 ] }
-axum = { version = "0.8.8", features = [ "ws" ] }
+axum = { version = "0.8.8", features = [ "ws", "http2" ] }
 base64 = "0.22.1"
 bytes = "1.11.1"
 color-eyre = "0.6.5"
