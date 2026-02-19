@@ -63,7 +63,11 @@ impl OmikronConnection {
     }
 
     pub async fn get_omikron_id(&self) -> i64 {
-        *self.omikron_id.read().await
+        let omikron_id = {
+            let guard = self.omikron_id.read().await;
+            guard.clone()
+        };
+        omikron_id
     }
     pub async fn is_identified(&self) -> bool {
         *self.identified.read().await && *self.challenged.read().await
@@ -267,18 +271,23 @@ impl OmikronConnection {
         }
         if cv.is_type(CommunicationType::iota_disconnected) {
             log_in!(PrintType::Omega, "IOTA disconnected");
-            if let Some(iota_id) = cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()) {
-                let iota_offline =
-                    user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
-                if iota_offline {
-                    if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
-                        let user_ids: Vec<i64> = users.iter().map(|u| u.0).collect();
-                        user_online_tracker::untrack_many_users(&user_ids);
+
+            if let Some(v) = cv.get_data(DataTypes::iota_id) {
+                if let Some(iota_id) = v.as_i64() {
+                    let iota_offline =
+                        user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
+                    if iota_offline {
+                        if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
+                            let user_ids: Vec<i64> = users.iter().map(|u| u.0).collect();
+                            user_online_tracker::untrack_many_users(&user_ids);
+                        }
                     }
                 }
             }
+
             return;
         }
+
         if cv.is_type(CommunicationType::sync_client_iota_status) {
             if let Some(json::JsonValue::Array(user_ids)) =
                 cv.get_data(DataTypes::user_ids).cloned()
