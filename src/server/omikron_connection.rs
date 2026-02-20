@@ -797,8 +797,8 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::change_iota_data) {
-            if let (Some(user_id), Some(iota_id), Some(reset_token), Some(new_token)) = (
-                cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()),
+            if let (user_id, Some(iota_id), Some(reset_token), Some(new_token)) = (
+                cv.get_sender(),
                 cv.get_data(DataTypes::iota_id).and_then(|v| v.as_i64()),
                 cv.get_data(DataTypes::reset_token).and_then(|v| v.as_str()),
                 cv.get_data(DataTypes::new_token).and_then(|v| v.as_str()),
@@ -854,25 +854,21 @@ impl OmikronConnection {
             return;
         }
         if cv.is_type(CommunicationType::delete_user) {
-            if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                match sql::delete_user(user_id).await {
-                    Ok(_) => {
-                        let response = CommunicationValue::new(CommunicationType::success)
-                            .with_id(cv.get_id());
-                        self.send_message(&response).await;
-                    }
-                    Err(e) => {
-                        self.send_message(
-                            &CommunicationValue::new(CommunicationType::error)
-                                .with_id(cv.get_id())
-                                .add_data_str(DataTypes::error_type, e.to_string()),
-                        )
-                        .await;
-                    }
+            let user_id = cv.get_sender();
+            match sql::delete_user(user_id).await {
+                Ok(_) => {
+                    let response =
+                        CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                    self.send_message(&response).await;
                 }
-            } else {
-                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
+                Err(e) => {
+                    self.send_message(
+                        &CommunicationValue::new(CommunicationType::error)
+                            .with_id(cv.get_id())
+                            .add_data_str(DataTypes::error_type, e.to_string()),
+                    )
                     .await;
+                }
             }
             return;
         }
@@ -902,35 +898,29 @@ impl OmikronConnection {
 
         // NOTIFICATIONS
         if cv.is_type(CommunicationType::get_notifications) {
-            if let Some(JsonValue::Number(user_id)) = cv.get_data(DataTypes::user_id) {
-                if let Ok(notifications) =
-                    sql::get_notifications(user_id.as_fixed_point_i64(0).unwrap()).await
-                {
-                    let mut json_array = Vec::new();
-                    for (sender, amount) in notifications {
-                        let mut obj = JsonValue::new_object();
-                        let _ = obj.insert("sender", JsonValue::from(sender));
-                        let _ = obj.insert("amount", JsonValue::from(amount));
-                        json_array.push(obj);
-                    }
-                    let response = CommunicationValue::new(CommunicationType::get_notifications)
-                        .with_id(cv.get_id())
-                        .add_array(DataTypes::notifications, json_array);
-                    self.send_message(&response).await;
+            let user_id = cv.get_sender();
+            if let Ok(notifications) = sql::get_notifications(user_id).await {
+                let mut json_array = Vec::new();
+                for (sender, amount) in notifications {
+                    let mut obj = JsonValue::new_object();
+                    let _ = obj.insert("sender", JsonValue::from(sender));
+                    let _ = obj.insert("amount", JsonValue::from(amount));
+                    json_array.push(obj);
                 }
+                let response = CommunicationValue::new(CommunicationType::get_notifications)
+                    .with_id(cv.get_id())
+                    .add_array(DataTypes::notifications, json_array);
+                self.send_message(&response).await;
             }
         }
         if cv.is_type(CommunicationType::read_notification) {
-            if let (Some(JsonValue::Number(user_id)), Some(JsonValue::Number(other_id))) = (
-                cv.get_data(DataTypes::receiver_id),
-                cv.get_data(DataTypes::sender_id),
+            if let (user_id, Some(other_id)) = (
+                cv.get_sender(),
+                cv.get_data(DataTypes::sender_id)
+                    .unwrap_or(&JsonValue::Null)
+                    .as_i64(),
             ) {
-                if let Ok(_) = sql::read_notification(
-                    user_id.as_fixed_point_i64(0).unwrap(),
-                    other_id.as_fixed_point_i64(0).unwrap(),
-                )
-                .await
-                {
+                if let Ok(_) = sql::read_notification(user_id, other_id).await {
                     let response = CommunicationValue::new(CommunicationType::read_notification)
                         .with_id(cv.get_id());
                     self.send_message(&response).await;
@@ -938,16 +928,13 @@ impl OmikronConnection {
             }
         }
         if cv.is_type(CommunicationType::push_notification) {
-            if let (Some(JsonValue::Number(user_id)), Some(JsonValue::Number(other_id))) = (
-                cv.get_data(DataTypes::receiver_id),
-                cv.get_data(DataTypes::sender_id),
+            if let (user_id, Some(other_id)) = (
+                cv.get_sender(),
+                cv.get_data(DataTypes::sender_id)
+                    .unwrap_or(&JsonValue::Null)
+                    .as_i64(),
             ) {
-                if let Ok(_) = sql::add_notification(
-                    user_id.as_fixed_point_i64(0).unwrap(),
-                    other_id.as_fixed_point_i64(0).unwrap(),
-                )
-                .await
-                {
+                if let Ok(_) = sql::add_notification(user_id, other_id).await {
                     let response = CommunicationValue::new(CommunicationType::push_notification)
                         .with_id(cv.get_id());
                     self.send_message(&response).await;
