@@ -92,6 +92,9 @@ impl OmikronConnection {
             return;
         }
 
+        // ──────────────────────────────
+        // Identification
+        // ──────────────────────────────
         if !self.is_identified().await {
             let identified = *self.identified.read().await;
             let challenged = *self.challenged.read().await;
@@ -165,9 +168,6 @@ impl OmikronConnection {
                 return;
             }
 
-            // ──────────────────────────────
-            // Challenge response
-            // ──────────────────────────────
             if identified && !challenged && cv.is_type(CommunicationType::challenge_response) {
                 let client_response = cv
                     .get_data(DataTypes::challenge)
@@ -726,79 +726,73 @@ impl OmikronConnection {
 
         // CHANGING DATA
         if cv.is_type(CommunicationType::change_user_data) {
-            if let Some(user_id) = cv.get_data(DataTypes::user_id).and_then(|v| v.as_i64()) {
-                let mut success = true;
-                let mut error_message = String::new();
+            let user_id = cv.get_sender();
+            let mut success = true;
+            let mut error_message = String::new();
 
-                if let Some(username) = cv.get_data(DataTypes::username).and_then(|v| v.as_str()) {
-                    if let Err(e) = sql::change_username(user_id, username.to_string()).await {
-                        success = false;
-                        error_message = e.to_string();
-                    }
+            if let Some(username) = cv.get_data(DataTypes::username).and_then(|v| v.as_str()) {
+                if let Err(e) = sql::change_username(user_id, username.to_string()).await {
+                    success = false;
+                    error_message = e.to_string();
                 }
-                if let Some(display) = cv.get_data(DataTypes::display).and_then(|v| v.as_str()) {
-                    if let Err(e) = sql::change_display_name(user_id, display.to_string()).await {
-                        success = false;
-                        error_message = e.to_string();
-                    }
+            }
+            if let Some(display) = cv.get_data(DataTypes::display).and_then(|v| v.as_str()) {
+                if let Err(e) = sql::change_display_name(user_id, display.to_string()).await {
+                    success = false;
+                    error_message = e.to_string();
                 }
-                if let Some(avatar) = cv.get_data(DataTypes::avatar).and_then(|v| v.as_str()) {
-                    if let Err(e) = sql::change_avatar(user_id, avatar.to_string()).await {
-                        success = false;
-                        error_message = e.to_string();
-                    }
+            }
+            if let Some(avatar) = cv.get_data(DataTypes::avatar).and_then(|v| v.as_str()) {
+                if let Err(e) = sql::change_avatar(user_id, avatar.to_string()).await {
+                    success = false;
+                    error_message = e.to_string();
                 }
-                if let Some(about) = cv.get_data(DataTypes::about).and_then(|v| v.as_str()) {
-                    if let Err(e) = sql::change_about(user_id, about.to_string()).await {
-                        success = false;
-                        error_message = e.to_string();
-                    }
+            }
+            if let Some(about) = cv.get_data(DataTypes::about).and_then(|v| v.as_str()) {
+                if let Err(e) = sql::change_about(user_id, about.to_string()).await {
+                    success = false;
+                    error_message = e.to_string();
                 }
-                if let Some(status) = cv.get_data(DataTypes::status).and_then(|v| v.as_str()) {
-                    if let Err(e) = sql::change_status(user_id, status.to_string()).await {
-                        success = false;
-                        error_message = e.to_string();
-                    }
+            }
+            if let Some(status) = cv.get_data(DataTypes::status).and_then(|v| v.as_str()) {
+                if let Err(e) = sql::change_status(user_id, status.to_string()).await {
+                    success = false;
+                    error_message = e.to_string();
                 }
-                if let Some(public_key) =
-                    cv.get_data(DataTypes::public_key).and_then(|v| v.as_str())
+            }
+            if let Some(public_key) = cv.get_data(DataTypes::public_key).and_then(|v| v.as_str()) {
+                if let Some(private_key_hash) = cv
+                    .get_data(DataTypes::private_key_hash)
+                    .and_then(|v| v.as_str())
                 {
-                    if let Some(private_key_hash) = cv
-                        .get_data(DataTypes::private_key_hash)
-                        .and_then(|v| v.as_str())
-                    {
-                        if let Err(e) = sql::change_keys(
-                            user_id,
-                            public_key.to_string(),
-                            private_key_hash.to_string(),
-                        )
-                        .await
-                        {
-                            success = false;
-                            error_message = e.to_string();
-                        }
-                    } else {
-                        success = false;
-                        error_message =
-                            "private_key_hash is required when changing public_key".to_string();
-                    }
-                }
-
-                if success {
-                    let response =
-                        CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
-                    self.send_message(&response).await;
-                } else {
-                    self.send_message(
-                        &CommunicationValue::new(CommunicationType::error)
-                            .with_id(cv.get_id())
-                            .add_data_str(DataTypes::error_type, error_message),
+                    if let Err(e) = sql::change_keys(
+                        user_id,
+                        public_key.to_string(),
+                        private_key_hash.to_string(),
                     )
-                    .await;
+                    .await
+                    {
+                        success = false;
+                        error_message = e.to_string();
+                    }
+                } else {
+                    success = false;
+                    error_message =
+                        "private_key_hash is required when changing public_key".to_string();
                 }
+            }
+
+            if success {
+                let response =
+                    CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                self.send_message(&response).await;
             } else {
-                self.send_error_response(&cv.get_id(), CommunicationType::error_invalid_data)
-                    .await;
+                self.send_message(
+                    &CommunicationValue::new(CommunicationType::error)
+                        .with_id(cv.get_id())
+                        .add_data_str(DataTypes::error_type, error_message),
+                )
+                .await;
             }
             return;
         }
