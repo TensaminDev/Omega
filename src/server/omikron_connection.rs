@@ -7,7 +7,7 @@ use crate::sql::sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get
 use crate::sql::user_online_tracker::{self};
 use crate::util::crypto_helper::encrypt;
 use crate::util::logger::PrintType;
-use crate::{get_private_key, get_public_key, log_in, log_out};
+use crate::{get_private_key, get_public_key, log_cv_in, log_cv_out, log_in, log_out};
 use actix::Addr;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
@@ -50,14 +50,7 @@ impl OmikronConnection {
     pub async fn send_message(&self, cv: &CommunicationValue) {
         let text = cv.to_json().to_string();
 
-        if !cv.is_type(CommunicationType::pong) {
-            log_out!(
-                *self.omikron_id.read().await,
-                PrintType::Omikron,
-                "{}",
-                text
-            );
-        }
+        log_cv_out!(PrintType::Omikron, cv);
 
         self.ws_addr.read().await.do_send(WsSendMessage(text));
     }
@@ -75,18 +68,11 @@ impl OmikronConnection {
 
     pub async fn handle_message(self: Arc<Self>, message: String) {
         let cv = CommunicationValue::from_json(&message);
+        log_cv_in!(PrintType::Omikron, cv);
         if cv.is_type(CommunicationType::ping) {
             self.handle_ping(cv).await;
             return;
         }
-
-        log_in!(
-            *self.omikron_id.read().await,
-            PrintType::Omikron,
-            "{}",
-            message
-        );
-
         if let Some((_, task)) = self.waiting_tasks.remove(&cv.get_id()) {
             let _ = task(self.clone(), cv.clone());
             return;
