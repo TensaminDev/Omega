@@ -958,23 +958,19 @@ impl OmikronConnection {
         self.send_message(&error).await;
     }
     pub async fn close(&self) {
-        if self.is_identified().await {
-            let omikron_id = self.get_omikron_id().await;
-            if omikron_id != 0 {
-                log_in!(PrintType::Omega, "Omikron Disconnected");
-                omikron_manager::remove_omikron(omikron_id).await;
-                user_online_tracker::untrack_omikron(omikron_id).await;
-            }
+        let omikron_id = self.get_omikron_id().await;
+        if omikron_id != 0 {
+            log_in!(omikron_id, PrintType::Omega, "Omikron Disconnected");
+            omikron_manager::remove_omikron(omikron_id).await;
+            user_online_tracker::untrack_omikron(omikron_id).await;
         }
     }
     pub async fn handle_close(self: Arc<Self>) {
-        if self.is_identified().await {
-            let omikron_id = self.get_omikron_id().await;
-            if omikron_id != 0 {
-                log_in!(PrintType::Omega, "Omikron Disconnected");
-                omikron_manager::remove_omikron(omikron_id).await;
-                user_online_tracker::untrack_omikron(omikron_id).await;
-            }
+        let omikron_id = self.get_omikron_id().await;
+        if omikron_id != 0 {
+            log_in!(omikron_id, PrintType::Omega, "Omikron Disconnected");
+            omikron_manager::remove_omikron(omikron_id).await;
+            user_online_tracker::untrack_omikron(omikron_id).await;
         }
     }
 

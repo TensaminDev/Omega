@@ -81,26 +81,31 @@ pub fn untrack_many_users(user_ids: &[i64]) {
 }
 
 pub async fn untrack_omikron(omikron_id: i64) {
+    let primary_keys_to_remove: Vec<i64> = IOTA_PRIMARY_OMIKRON_CONNECTION
+        .iter()
+        .filter(|entry| *entry.value() == omikron_id)
+        .map(|entry| *entry.key())
+        .collect();
+
+    for key in primary_keys_to_remove {
+        IOTA_PRIMARY_OMIKRON_CONNECTION.remove(&key);
+    }
+
     let mut offline_iotas = Vec::new();
 
-    IOTA_OMIKRON_CONNECTIONS.retain(|iota_id, connections| {
+    for mut entry in IOTA_OMIKRON_CONNECTIONS.iter_mut() {
+        let connections = entry.value_mut();
+
         connections.retain(|id| *id != omikron_id);
 
-        if IOTA_PRIMARY_OMIKRON_CONNECTION
-            .get(iota_id)
-            .map(|p| *p == omikron_id)
-            .unwrap_or(false)
-        {
-            IOTA_PRIMARY_OMIKRON_CONNECTION.remove(iota_id);
-        }
-
         if connections.is_empty() {
-            offline_iotas.push(*iota_id);
-            false
-        } else {
-            true
+            offline_iotas.push(*entry.key());
         }
-    });
+    }
+
+    for iota_id in &offline_iotas {
+        IOTA_OMIKRON_CONNECTIONS.remove(iota_id);
+    }
 
     USER_STATUS_MAP.retain(|_, status| status.omikron_id != omikron_id);
 
