@@ -1,4 +1,3 @@
-use crate::data::communication::{CommunicationType, CommunicationValue, DataTypes};
 use crate::get_public_key;
 use crate::server::omikron_manager::get_random_omikron;
 use crate::sql::sql;
@@ -11,7 +10,6 @@ use actix_web::HttpResponse;
 use actix_web::http::{StatusCode, header};
 use base64::Engine as _;
 use json::JsonValue;
-use json::number::Number;
 
 pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
     if path == "OPTIONS" {
@@ -35,6 +33,9 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
     };
 
     let (status, body_text) = match path_parts.as_slice() {
+        // ==================================================
+        // DOWNLOAD IOTA FRONTEND
+        // ==================================================
         ["api", "download", "iota_frontend"] => {
             let file_path = "downloads/[iota_frontend].zip";
 
@@ -50,87 +51,107 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                         .body(file_bytes);
                 }
                 Err(_) => {
+                    let mut res = JsonValue::new_object();
+                    res["status"] = "error_not_found".into();
                     return HttpResponse::NotFound()
                         .insert_header(("Access-Control-Allow-Origin", "*"))
-                        .body("File not found");
+                        .body(res.dump());
                 }
             }
         }
+
+        // ==================================================
+        // GET RANDOM OMIKRON
+        // ==================================================
         ["api", "get", "omikron"] => {
             if let Ok(omikron_conn) = get_random_omikron().await {
-                if let Ok((public_key, ip_address)) =
-                    sql::get_omikron_by_id(omikron_conn.get_omikron_id().await).await
-                {
-                    (
-                        StatusCode::OK,
-                        format!(
-                            "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
-                            omikron_conn.get_omikron_id().await,
-                            public_key,
-                            ip_address
-                        ),
-                    )
+                let id = omikron_conn.get_omikron_id().await;
+
+                if let Ok((public_key, ip_address)) = sql::get_omikron_by_id(id).await {
+                    let mut res = JsonValue::new_object();
+                    res["status"] = "success".into();
+                    res["id"] = id.into();
+                    res["public_key"] = public_key.into();
+                    res["ip_address"] = ip_address.into();
+
+                    (StatusCode::OK, res.dump())
                 } else {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "selected an invalid omikron".to_string(),
-                    )
+                    let mut res = JsonValue::new_object();
+                    res["status"] = "error".into();
+                    (StatusCode::INTERNAL_SERVER_ERROR, res.dump())
                 }
             } else {
-                (
-                    StatusCode::NOT_FOUND,
-                    "couldn't find online omikron".to_string(),
-                )
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_not_found".into();
+                (StatusCode::NOT_FOUND, res.dump())
             }
         }
+
+        // ==================================================
+        // GET OMIKRON BY ID
+        // ==================================================
         ["api", "get", "omikron", id] => {
             let id = id.parse::<i64>().unwrap_or(0);
+
             if id == 0 {
-                not_found()
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_bad_request".into();
+                (StatusCode::BAD_REQUEST, res.dump())
             } else if let Ok((public_key, ip_address)) = get_omikron_by_id(id).await {
-                (
-                    StatusCode::OK,
-                    format!(
-                        "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
-                        id, public_key, ip_address
-                    ),
-                )
+                let mut res = JsonValue::new_object();
+                res["status"] = "success".into();
+                res["id"] = id.into();
+                res["public_key"] = public_key.into();
+                res["ip_address"] = ip_address.into();
+                (StatusCode::OK, res.dump())
             } else if let Some(omikron_id) = get_iota_primary_omikron_connection(id) {
                 if let Ok((public_key, ip_address)) = get_omikron_by_id(omikron_id).await {
-                    (
-                        StatusCode::OK,
-                        format!(
-                            "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
-                            omikron_id, public_key, ip_address
-                        ),
-                    )
+                    let mut res = JsonValue::new_object();
+                    res["status"] = "success".into();
+                    res["id"] = omikron_id.into();
+                    res["public_key"] = public_key.into();
+                    res["ip_address"] = ip_address.into();
+                    (StatusCode::OK, res.dump())
                 } else {
-                    not_found()
+                    let mut res = JsonValue::new_object();
+                    res["status"] = "error_not_found".into();
+                    (StatusCode::NOT_FOUND, res.dump())
                 }
             } else if let Ok((_, iota_id, _, _, _, _, _, _, _, _, _, _)) = get_by_user_id(id).await
             {
                 if let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) {
                     if let Ok((public_key, ip_address)) = get_omikron_by_id(omikron_id).await {
-                        (
-                            StatusCode::OK,
-                            format!(
-                                "{{\"id\": {}, \"public_key\": \"{}\", \"ip_address\": \"{}\"}}",
-                                omikron_id, public_key, ip_address
-                            ),
-                        )
+                        let mut res = JsonValue::new_object();
+                        res["status"] = "success".into();
+                        res["id"] = omikron_id.into();
+                        res["public_key"] = public_key.into();
+                        res["ip_address"] = ip_address.into();
+                        (StatusCode::OK, res.dump())
                     } else {
-                        not_found()
+                        let mut res = JsonValue::new_object();
+                        res["status"] = "error_not_found".into();
+                        (StatusCode::NOT_FOUND, res.dump())
                     }
                 } else {
-                    not_found()
+                    let mut res = JsonValue::new_object();
+                    res["status"] = "error_not_found".into();
+                    (StatusCode::NOT_FOUND, res.dump())
                 }
             } else {
-                not_found()
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_not_found".into();
+                (StatusCode::NOT_FOUND, res.dump())
             }
         }
+
+        // ==================================================
+        // GET ID BY USERNAME
+        // ==================================================
         ["api", "get", "id", username] => {
             if username.is_empty() {
-                not_found()
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_bad_request".into();
+                (StatusCode::BAD_REQUEST, res.dump())
             } else if let Ok((
                 id,
                 iota_id,
@@ -146,37 +167,49 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 _,
             )) = sql::get_by_username(username).await
             {
-                let cv = CommunicationValue::new(CommunicationType::success)
-                    .add_data_str(DataTypes::username, username)
-                    .add_data_str(DataTypes::public_key, public_key)
-                    .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
-                    .add_data(DataTypes::iota_id, JsonValue::Number(Number::from(iota_id)))
-                    .add_data(
-                        DataTypes::sub_level,
-                        JsonValue::Number(Number::from(sub_level)),
-                    )
-                    .add_data(DataTypes::sub_end, JsonValue::Number(Number::from(sub_end)));
-                (StatusCode::OK, cv.to_json().to_string())
+                let mut res = JsonValue::new_object();
+                res["status"] = "success".into();
+                res["username"] = username.into();
+                res["public_key"] = public_key.into();
+                res["user_id"] = id.into();
+                res["iota_id"] = iota_id.into();
+                res["sub_level"] = sub_level.into();
+                res["sub_end"] = sub_end.into();
+
+                (StatusCode::OK, res.dump())
             } else {
-                (
-                    StatusCode::OK,
-                    CommunicationValue::new(CommunicationType::error_not_found)
-                        .to_json()
-                        .to_string(),
-                )
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_not_found".into();
+                (StatusCode::OK, res.dump())
             }
         }
-        ["api", "get", "public_key"] => (StatusCode::OK, public_key_to_base64(&get_public_key())),
+
+        // ==================================================
+        // GET SERVER PUBLIC KEY
+        // ==================================================
+        ["api", "get", "public_key"] => {
+            let mut res = JsonValue::new_object();
+            res["status"] = "success".into();
+            res["public_key"] = public_key_to_base64(&get_public_key()).into();
+            (StatusCode::OK, res.dump())
+        }
+
+        // ==================================================
+        // GET USER BY ID
+        // ==================================================
         ["api", "get", "user", id] => {
             let id: i64 = id.parse().unwrap_or(0);
+
             if id == 0 {
-                bad_request()
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_bad_request".into();
+                (StatusCode::BAD_REQUEST, res.dump())
             } else if let Ok((
                 id,
                 iota_id,
                 username,
                 display,
-                status,
+                status_msg,
                 about,
                 avatar,
                 sub_level,
@@ -186,47 +219,46 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 _,
             )) = sql::get_by_user_id(id).await
             {
-                let mut cv = CommunicationValue::new(CommunicationType::success)
-                    .add_data_str(DataTypes::username, username)
-                    .add_data_str(DataTypes::public_key, public_key)
-                    .add_data(DataTypes::user_id, JsonValue::Number(Number::from(id)))
-                    .add_data(DataTypes::iota_id, JsonValue::Number(Number::from(iota_id)))
-                    .add_data(
-                        DataTypes::sub_level,
-                        JsonValue::Number(Number::from(sub_level)),
-                    )
-                    .add_data(DataTypes::sub_end, JsonValue::Number(Number::from(sub_end)));
+                let mut res = JsonValue::new_object();
+                res["status"] = "success".into();
+                res["username"] = username.into();
+                res["public_key"] = public_key.into();
+                res["user_id"] = id.into();
+                res["iota_id"] = iota_id.into();
+                res["sub_level"] = sub_level.into();
+                res["sub_end"] = sub_end.into();
+
                 if let Some(display) = display {
-                    cv = cv.add_data_str(DataTypes::display, display);
+                    res["display"] = display.into();
                 }
-                if let Some(status) = status {
-                    cv = cv.add_data_str(DataTypes::status, status);
+                if let Some(status_msg) = status_msg {
+                    res["status_message"] = status_msg.into();
                 }
                 if let Some(about) = about {
-                    cv = cv.add_data_str(DataTypes::about, about);
+                    res["about"] = about.into();
                 }
                 if let Some(avatar) = avatar {
-                    cv = cv.add_data_str(
-                        DataTypes::avatar,
-                        base64::engine::general_purpose::STANDARD.encode(avatar),
-                    );
+                    res["avatar"] = base64::engine::general_purpose::STANDARD
+                        .encode(avatar)
+                        .into();
                 }
-                (StatusCode::OK, cv.to_json().to_string())
+
+                (StatusCode::OK, res.dump())
             } else {
-                (
-                    StatusCode::OK,
-                    CommunicationValue::new(CommunicationType::error_not_found)
-                        .to_json()
-                        .to_string(),
-                )
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_not_found".into();
+                (StatusCode::OK, res.dump())
             }
         }
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            CommunicationValue::new(CommunicationType::error)
-                .to_json()
-                .to_string(),
-        ),
+
+        // ==================================================
+        // DEFAULT
+        // ==================================================
+        _ => {
+            let mut res = JsonValue::new_object();
+            res["status"] = "error".into();
+            (StatusCode::INTERNAL_SERVER_ERROR, res.dump())
+        }
     };
     let body_bytes = body_text.into_bytes();
 

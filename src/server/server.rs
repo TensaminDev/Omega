@@ -1,11 +1,10 @@
 use crate::{
     log,
-    server::{api, short_link::get_short_link, socket},
+    server::{api, short_link::get_short_link},
     util::file_util::get_directory,
 };
 
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::header, web};
-use actix_web_actors::ws;
 
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
@@ -42,7 +41,6 @@ pub async fn start(port: u16) -> anyhow::Result<()> {
         App::new()
             .route("/api/{path:.*}", web::to(api_handler))
             .route("/direct/{path:.*}", web::to(direct_handler))
-            .route("/ws/{path:.*}", web::get().to(ws_handler))
     })
     .bind_rustls_0_23(addr, config)?
     .run()
@@ -63,16 +61,6 @@ async fn direct_handler(req: HttpRequest) -> impl Responder {
             .append_header((header::LOCATION, "https://tensamin.net"))
             .finish()
     }
-}
-async fn ws_handler(
-    req: HttpRequest,
-    stream: web::Payload,
-    path: web::Path<String>,
-) -> Result<HttpResponse, actix_web::Error> {
-    let path = path.into_inner();
-    println!("WS handler reached: {}", path);
-
-    ws::start(socket::WsSession::new(path), &req, stream)
 }
 
 async fn api_handler(req: HttpRequest, body: web::Bytes) -> HttpResponse {
