@@ -3,4 +3,3 @@ pub mod omikron_connection;
 pub mod omikron_manager;
 pub mod server;
 pub mod short_link;
-pub mod socket;

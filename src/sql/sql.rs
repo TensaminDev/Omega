@@ -65,9 +65,9 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
         about VARCHAR(200) COLLATE utf8mb4_bin,
         avatar MEDIUMBLOB,
         sub_level INT(11) NOT NULL DEFAULT 0,
-        sub_end BIGINT(20) NOT NULL,
+        sub_end BIGINT(20) NOT NULL DEFAULT 0,
         public_key TEXT NOT NULL COLLATE utf8mb4_bin,
-        private_key_hash TEXT NOT NULL COLLATE utf8mb4_bin,
+        private_key_hash TEXT NOT NULL COLLATE utf8mb4_bin DEFAULT '',
         iota_id BIGINT UNSIGNED NOT NULL,
         token VARCHAR(255) NOT NULL UNIQUE COLLATE utf8mb4_bin
         )",

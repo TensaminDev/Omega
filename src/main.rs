@@ -1,8 +1,8 @@
-mod data;
 mod server;
 mod sql;
 mod util;
 
+use crate::server::omikron_connection;
 use crate::sql::sql::initialize_db;
 use crate::sql::sql::print_users;
 use crate::util::crypto_helper::load_public_key;
@@ -43,7 +43,7 @@ async fn main() {
     } else {
         log!("  Users");
     }
-    let _ = server::server::start(9187).await;
-
+    let _ = server::server::start(9188).await;
+    let _ = omikron_connection::OmikronServer::start(9187).await;
     tokio::signal::ctrl_c().await.unwrap();
 }
