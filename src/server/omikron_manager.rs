@@ -8,7 +8,7 @@ pub static OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Arc<OmikronConnection>>> =
     Lazy::new(|| DashMap::new());
 
 pub async fn add_omikron(conn: Arc<OmikronConnection>) {
-    let id = match conn.get_omikron_id().await {
+    let id = match conn.clone().get_omikron_id().await {
         Some(id) => id,
         _ => {
             conn.close().await;

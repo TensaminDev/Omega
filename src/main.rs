@@ -28,7 +28,9 @@ async fn main() {
     log_in!("Incoming messages");
     log_out!("Outgoing messages");
 
-    let _ = omikron_connection::start(9187).await;
+    tokio::spawn(async move {
+        let _ = omikron_connection::start(9187).await;
+    });
 
     log!("Started");
     log!("  .env");

@@ -16,11 +16,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
 use epsilon_core::{CommunicationType, CommunicationValue, DataTypes, DataValue};
 use epsilon_native::{Host, Receiver, Sender};
-use quinn::ServerConfig;
 use quinn::crypto::rustls::QuicServerConfig;
+use quinn::{Endpoint, ServerConfig};
 use rand::{Rng, distributions::Alphanumeric};
 use rustls::{ServerConfig as CryptoConfig, crypto::aws_lc_rs};
 use std::{
+    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -105,18 +106,10 @@ pub struct OmikronConnection {
     id: u64,
     sender: Mutex<Option<Sender>>,
     state: RwLock<AuthState>,
-
-    // Authentication state (preserved from original)
     challenge: RwLock<String>,
     pub_key: RwLock<Option<Vec<u8>>>,
-
-    // Ping tracking
     pub ping: RwLock<i64>,
-
-    // Waiting tasks for request/response pattern
     waiting_tasks: DashMap<u32, WaitingTask>,
-
-    // Cleanup handle
     cleanup_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
@@ -189,7 +182,7 @@ impl OmikronConnection {
         }
 
         // Connection closed
-        self.cleanup().await;
+        self.clone().cleanup().await;
         log_in!(
             self.id as i64,
             PrintType::Omega,
@@ -220,10 +213,10 @@ impl OmikronConnection {
 
         // Route based on authentication state
         match *self.state.read().await {
-            AuthState::Unauthenticated => self.handle_unauthenticated(cv).await,
-            AuthState::Identified { .. } => self.handle_identified(cv).await,
+            AuthState::Unauthenticated => self.clone().handle_unauthenticated(cv).await,
+            AuthState::Identified { .. } => self.clone().handle_identified(cv).await,
             AuthState::Authenticated { omikron_id } => {
-                self.handle_authenticated(cv, omikron_id).await
+                self.clone().handle_authenticated(cv, omikron_id).await
             }
         }
     }
@@ -232,7 +225,7 @@ impl OmikronConnection {
     // Authentication Handlers
     // -------------------------------------------------------------------------
 
-    async fn handle_unauthenticated(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_unauthenticated(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         if !cv.is_type(CommunicationType::identification) {
             self.send_error_response(cv.get_id(), CommunicationType::error_not_authenticated)
                 .await;
@@ -285,7 +278,7 @@ impl OmikronConnection {
         self.send(&response).await
     }
 
-    async fn handle_identified(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_identified(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         if !cv.is_type(CommunicationType::challenge_response) {
             self.send_error_response(cv.get_id(), CommunicationType::error_not_authenticated)
                 .await;
@@ -300,19 +293,16 @@ impl OmikronConnection {
         let expected_challenge = self.challenge.read().await.clone();
 
         if client_response == expected_challenge {
-            // Challenge passed - mark as authenticated
             let omikron_id = self.state.read().await.omikron_id().unwrap_or(0);
             *self.state.write().await = AuthState::Authenticated { omikron_id };
 
-            // Register with manager
-            omikron_manager::add_omikron(self.arc_self()).await;
+            omikron_manager::add_omikron(self.clone()).await;
 
-            // Send success response
             let response = CommunicationValue::new(CommunicationType::identification_response)
                 .with_id(cv.get_id())
                 .add_data(DataTypes::accepted, DataValue::Bool(true));
 
-            self.send(&response).await?;
+            self.clone().send(&response).await?;
             log_in!(omikron_id, PrintType::Omega, "Omikron authenticated");
             Ok(())
         } else {
@@ -327,7 +317,7 @@ impl OmikronConnection {
     // -------------------------------------------------------------------------
 
     async fn handle_authenticated(
-        &self,
+        self: Arc<Self>,
         cv: CommunicationValue,
         omikron_id: i64,
     ) -> OmikronResult<()> {
@@ -357,11 +347,9 @@ impl OmikronConnection {
                 Ok(())
             }
 
-            // Data queries
             CommunicationType::get_user_data => self.handle_get_user_data(cv).await,
             CommunicationType::get_iota_data => self.handle_get_iota_data(cv).await,
 
-            // Registration
             CommunicationType::get_register => self.handle_get_register(cv).await,
             CommunicationType::complete_register_iota => {
                 self.handle_complete_register_iota(cv).await
@@ -370,13 +358,11 @@ impl OmikronConnection {
                 self.handle_complete_register_user(cv).await
             }
 
-            // Data modification
             CommunicationType::change_user_data => self.handle_change_user_data(cv).await,
             CommunicationType::change_iota_data => self.handle_change_iota_data(cv).await,
             CommunicationType::delete_user => self.handle_delete_user(cv).await,
             CommunicationType::delete_iota => self.handle_delete_iota(cv).await,
 
-            // Notifications
             CommunicationType::get_notifications => self.handle_get_notifications(cv).await,
             CommunicationType::read_notification => self.handle_read_notification(cv).await,
             CommunicationType::push_notification => self.handle_push_notification(cv).await,
@@ -397,7 +383,7 @@ impl OmikronConnection {
     // Specific Handlers (ported from original WebSocket implementation)
     // -------------------------------------------------------------------------
 
-    async fn handle_shorten_link(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_shorten_link(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let link = cv
             .get_data(DataTypes::link)
             .as_str()
@@ -414,7 +400,7 @@ impl OmikronConnection {
         self.send(&response).await
     }
 
-    async fn handle_user_connected(&self, cv: CommunicationValue, omikron_id: i64) {
+    async fn handle_user_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "User connected");
         if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
             user_online_tracker::track_user_status(
@@ -425,7 +411,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_user_disconnected(&self, cv: CommunicationValue, omikron_id: i64) {
+    async fn handle_user_disconnected(self: Arc<Self>, cv: CommunicationValue, _omikron_id: i64) {
         log_in!(PrintType::Omega, "User disconnected");
         if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
             if let Some(status) = user_online_tracker::get_user_status(user_id as i64) {
@@ -438,7 +424,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_iota_connected(&self, cv: CommunicationValue, omikron_id: i64) {
+    async fn handle_iota_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA connected");
         if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
             let iota_id = iota_id as i64;
@@ -468,7 +454,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_iota_disconnected(&self, cv: CommunicationValue, omikron_id: i64) {
+    async fn handle_iota_disconnected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA disconnected");
         if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
             let iota_id = iota_id as i64;
@@ -482,7 +468,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_sync_status(&self, cv: CommunicationValue, omikron_id: i64) {
+    async fn handle_sync_status(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         if let DataValue::Array(user_ids) = cv.get_data(DataTypes::user_ids) {
             for user_id_val in user_ids {
                 if let DataValue::Number(user_id) = user_id_val {
@@ -504,11 +490,14 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_get_user_data(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_get_user_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         // Try by user_id first
         if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
             if let Ok(user_data) = get_by_user_id(user_id as i64).await {
-                let response = self.build_user_data_response(cv.get_id(), user_data).await;
+                let response = self
+                    .clone()
+                    .build_user_data_response(cv.get_id(), user_data)
+                    .await;
                 return self.send(&response).await;
             }
         }
@@ -516,7 +505,10 @@ impl OmikronConnection {
         // Try by username
         if let Some(username) = cv.get_data(DataTypes::username).as_str() {
             if let Ok(user_data) = get_by_username(username).await {
-                let response = self.build_user_data_response(cv.get_id(), user_data).await;
+                let response = self
+                    .clone()
+                    .build_user_data_response(cv.get_id(), user_data)
+                    .await;
                 return self.send(&response).await;
             }
         }
@@ -528,7 +520,7 @@ impl OmikronConnection {
     }
 
     async fn build_user_data_response(
-        &self,
+        self: Arc<Self>,
         msg_id: u32,
         user: (
             i64,
@@ -615,11 +607,12 @@ impl OmikronConnection {
         response
     }
 
-    async fn handle_get_iota_data(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_get_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         // Try by iota_id
         if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
             if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
                 let response = self
+                    .clone()
                     .build_iota_data_response(cv.get_id(), iota_id, public_key, None, None)
                     .await;
                 return self.send(&response).await;
@@ -633,6 +626,7 @@ impl OmikronConnection {
             {
                 if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id).await {
                     let response = self
+                        .clone()
                         .build_iota_data_response(
                             cv.get_id(),
                             iota_id,
@@ -653,6 +647,7 @@ impl OmikronConnection {
             {
                 if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id).await {
                     let response = self
+                        .clone()
                         .build_iota_data_response(
                             cv.get_id(),
                             iota_id,
@@ -672,7 +667,7 @@ impl OmikronConnection {
     }
 
     async fn build_iota_data_response(
-        &self,
+        self: Arc<Self>,
         msg_id: u32,
         iota_id: i64,
         public_key: String,
@@ -705,7 +700,7 @@ impl OmikronConnection {
         )
     }
 
-    async fn handle_get_register(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_get_register(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let register_id = sql::get_register_id().await;
         let response = CommunicationValue::new(CommunicationType::get_register)
             .with_id(cv.get_id())
@@ -713,7 +708,10 @@ impl OmikronConnection {
         self.send(&response).await
     }
 
-    async fn handle_complete_register_iota(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_complete_register_iota(
+        self: Arc<Self>,
+        cv: CommunicationValue,
+    ) -> OmikronResult<()> {
         let iota_id_opt = cv
             .get_data(DataTypes::iota_id)
             .as_number()
@@ -759,7 +757,10 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_complete_register_user(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_complete_register_user(
+        self: Arc<Self>,
+        cv: CommunicationValue,
+    ) -> OmikronResult<()> {
         let user_id = cv
             .get_data(DataTypes::user_id)
             .as_number()
@@ -803,7 +804,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_change_user_data(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_change_user_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
         let mut success = true;
         let mut error_message = String::new();
@@ -866,7 +867,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_change_iota_data(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_change_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
 
         if let (Some(iota_id), Some(reset_token), Some(new_token)) = (
@@ -924,7 +925,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_delete_user(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_delete_user(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
         match sql::delete_user(user_id).await {
             Ok(_) => {
@@ -941,7 +942,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_delete_iota(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_delete_iota(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         if let Some(iota_id) = cv
             .get_data(DataTypes::iota_id)
             .as_number()
@@ -966,7 +967,10 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_get_notifications(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_get_notifications(
+        self: Arc<Self>,
+        cv: CommunicationValue,
+    ) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
         if let Ok(notifications) = sql::get_notifications(user_id).await {
             let json_array: Vec<DataValue> = notifications
@@ -988,7 +992,10 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_read_notification(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_read_notification(
+        self: Arc<Self>,
+        cv: CommunicationValue,
+    ) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
         if let Some(other_id) = cv
             .get_data(DataTypes::sender_id)
@@ -1007,7 +1014,10 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_push_notification(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_push_notification(
+        self: Arc<Self>,
+        cv: CommunicationValue,
+    ) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
         if let Some(other_id) = cv
             .get_data(DataTypes::sender_id)
@@ -1026,7 +1036,7 @@ impl OmikronConnection {
         }
     }
 
-    async fn handle_ping(&self, cv: CommunicationValue) -> OmikronResult<()> {
+    async fn handle_ping(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         if let DataValue::Number(last_ping) = cv.get_data(DataTypes::last_ping) {
             *self.ping.write().await = *last_ping;
         }
@@ -1039,7 +1049,7 @@ impl OmikronConnection {
     // Utilities
     // -------------------------------------------------------------------------
 
-    async fn send(&self, cv: &CommunicationValue) -> OmikronResult<()> {
+    async fn send(self: Arc<Self>, cv: &CommunicationValue) -> OmikronResult<()> {
         log_cv_out!(PrintType::Omikron, cv);
 
         let guard = self.sender.lock().await;
@@ -1052,7 +1062,7 @@ impl OmikronConnection {
     }
 
     async fn send_error_response(
-        &self,
+        self: Arc<Self>,
         message_id: u32,
         error_type: CommunicationType,
     ) -> OmikronResult<()> {
@@ -1060,9 +1070,9 @@ impl OmikronConnection {
         self.send(&error).await
     }
 
-    pub async fn close(&self) {}
+    pub async fn close(self: Arc<Self>) {}
 
-    async fn cleanup(&self) {
+    async fn cleanup(self: Arc<Self>) {
         if let Some(omikron_id) = self.state.read().await.omikron_id() {
             if omikron_id != 0 {
                 log_in!(omikron_id, PrintType::Omega, "Omikron disconnected");
@@ -1077,22 +1087,22 @@ impl OmikronConnection {
         }
     }
 
-    fn arc_self(&self) -> Arc<Self> {
+    fn arc_self(self: Arc<Self>) -> Arc<Self> {
         // This is a bit of a hack - in practice you'd store the Arc in the struct
         // or use weak references. For now, we rely on the caller having the Arc.
         panic!("Use the Arc<OmikronConnection> directly")
     }
 
     // Public API for external use
-    pub async fn is_authenticated(&self) -> bool {
+    pub async fn is_authenticated(self: Arc<Self>) -> bool {
         self.state.read().await.is_authenticated()
     }
 
-    pub async fn get_omikron_id(&self) -> Option<i64> {
+    pub async fn get_omikron_id(self: Arc<Self>) -> Option<i64> {
         self.state.read().await.omikron_id()
     }
 
-    pub async fn send_message(&self, cv: &CommunicationValue) -> OmikronResult<()> {
+    pub async fn send_message(self: Arc<Self>, cv: &CommunicationValue) -> OmikronResult<()> {
         self.send(cv).await
     }
 }
