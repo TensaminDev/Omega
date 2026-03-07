@@ -122,21 +122,6 @@ impl OmikronConnection {
             cleanup_handle: Mutex::new(None),
         });
 
-        // Start cleanup task for waiting tasks
-        let cleanup_conn = conn.clone();
-        let handle = tokio::spawn(async move {
-            let mut ticker = interval(CLEANUP_INTERVAL);
-            loop {
-                ticker.tick().await;
-                cleanup_conn
-                    .waiting_tasks
-                    .retain(|_, v| v.inserted_at.elapsed() < MAX_WAITING_AGE);
-            }
-        });
-
-        // Store handle (would need block_in_place or similar to set this immediately)
-        // For now, we'll handle this differently in handle()
-
         conn
     }
 
@@ -144,7 +129,7 @@ impl OmikronConnection {
     // Main Handler Loop
     // -------------------------------------------------------------------------
 
-    pub async fn handle(self: Arc<Self>, receiver: Receiver) {
+    pub async fn handle(self: Arc<Self>, receiver: &mut Receiver) {
         log_in!(
             self.id as i64,
             PrintType::Omega,
@@ -153,7 +138,7 @@ impl OmikronConnection {
 
         // Start cleanup task
         let cleanup_conn = self.clone();
-        let _cleanup_handle = tokio::spawn(async move {
+        let cleanup_handle = tokio::spawn(async move {
             let mut ticker = interval(CLEANUP_INTERVAL);
             loop {
                 ticker.tick().await;
@@ -162,23 +147,22 @@ impl OmikronConnection {
                     .retain(|_, v| v.inserted_at.elapsed() < MAX_WAITING_AGE);
             }
         });
+        *self.cleanup_handle.lock().await = Some(cleanup_handle);
 
         while let Ok(cv) = receiver.receive().await {
             if let Err(e) = self.clone().process_message(cv).await {
                 log_err!(0, PrintType::Omega, "Error processing message: {}", e);
-                // Don't break on error unless critical - match original WebSocket behavior
                 if matches!(e, OmikronError::NotConnected) {
                     break;
                 }
             }
         }
 
-        // Connection closed
         self.clone().cleanup().await;
         log_in!(
             self.id as i64,
             PrintType::Omega,
-            "Omikron connection  closed"
+            "Omikron connection closed"
         );
     }
 
@@ -203,8 +187,9 @@ impl OmikronConnection {
             return self.handle_ping(cv).await;
         }
 
+        let current_state = *self.state.read().await;
         // Route based on authentication state
-        match *self.state.read().await {
+        match current_state {
             AuthState::Unauthenticated => self.clone().handle_unauthenticated(cv).await,
             AuthState::Identified { .. } => self.clone().handle_identified(cv).await,
             AuthState::Authenticated { omikron_id } => {
@@ -227,21 +212,27 @@ impl OmikronConnection {
 
         // Extract omikron ID
         let omikron_id = cv
-            .get_data(DataTypes::omikron)
+            .get_data(DataTypes::omikron_id)
             .as_number()
             .ok_or(OmikronError::InvalidResponse)?;
+        log!("Omikron {:?} connected", omikron_id);
 
         // Lookup omikron in database
         let (public_key, _) = get_omikron_by_id(omikron_id)
             .await
             .map_err(|e| OmikronError::Sql(e.to_string()))?;
 
+        log!("Got public Key");
+
         let pub_key_bytes = STANDARD
             .decode(&public_key)
             .map_err(|_| OmikronError::AuthenticationFailed)?;
 
-        let omikron_pub_key =
-            PublicKey::from_bytes(&pub_key_bytes).ok_or(OmikronError::AuthenticationFailed)?;
+        let pub_key_bytes_clone = pub_key_bytes.clone();
+        let omikron_pub_key = PublicKey::from_bytes(&pub_key_bytes_clone)
+            .ok_or(OmikronError::AuthenticationFailed)?;
+
+        log!("Decoded public Key");
 
         // Generate challenge
         let challenge: String = rand::thread_rng()
@@ -250,14 +241,32 @@ impl OmikronConnection {
             .map(char::from)
             .collect();
 
-        // Store state
+        log!("Generated Challenge");
+
         *self.challenge.write().await = challenge.clone();
+
+        log!("Stored Challenge");
+
         *self.pub_key.write().await = Some(pub_key_bytes);
+
+        log!("Stored Pubkey");
+
         *self.state.write().await = AuthState::Identified { omikron_id };
 
-        // Encrypt challenge
-        let encrypted = encrypt(get_private_key(), omikron_pub_key, &challenge)
-            .map_err(|_| OmikronError::AuthenticationFailed)?;
+        log!("Stored State");
+
+        let challenge_clone = challenge.clone();
+        let private_key = get_private_key();
+        let public_key_for_encrypt = omikron_pub_key;
+
+        let encrypted = tokio::task::spawn_blocking(move || {
+            encrypt(private_key, public_key_for_encrypt, &challenge_clone)
+                .map_err(|_| OmikronError::AuthenticationFailed)
+        })
+        .await
+        .map_err(|_| OmikronError::AuthenticationFailed)??;
+
+        log!("Encrypted Challenge");
 
         // Send challenge response
         let response = CommunicationValue::new(CommunicationType::challenge)
@@ -268,6 +277,7 @@ impl OmikronConnection {
             )
             .add_data(DataTypes::challenge, DataValue::Str(encrypted));
 
+        log!("Sending Challenge");
         self.send(&response).await
     }
 
@@ -1065,7 +1075,13 @@ impl OmikronConnection {
         self.send(&error).await
     }
 
-    pub async fn close(self: Arc<Self>) {}
+    pub async fn close(self: Arc<Self>) {
+        log_in!(
+            self.get_omikron_id().await.unwrap_or(0),
+            PrintType::Omega,
+            "Omikron connection Closed"
+        );
+    }
 
     async fn cleanup(self: Arc<Self>) {
         if let Some(omikron_id) = self.state.read().await.omikron_id() {
@@ -1101,11 +1117,6 @@ impl OmikronConnection {
 // ============================================================================
 
 pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let cert_pem = load_file_vec("certs", "cert.pem")
-        .map_err(|e| format!("Failed to load certificate: {}", e))?;
-    let key_pem = load_file_vec("certs", "key.pem")
-        .map_err(|e| format!("Failed to load private key: {}", e))?;
-
     let cert_pem = load_file_vec("certs", "cert.pem").expect("Error loading Pemfile");
 
     let key_pem = load_file_vec("certs", "key.pem").expect("Error loading Keyfile");
@@ -1113,10 +1124,10 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let mut host: Host = epsilon_native::host(port, cert_pem, key_pem).await?;
     log!("OmikronServer listening on port {}", port);
 
-    while let Some((sender, receiver)) = host.next().await {
+    while let Some((sender, mut receiver)) = host.next().await {
         tokio::spawn(async move {
             let conn = OmikronConnection::new(sender);
-            conn.handle(receiver).await;
+            conn.handle(&mut receiver).await;
         });
     }
 

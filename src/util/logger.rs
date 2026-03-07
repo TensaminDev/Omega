@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -249,7 +249,7 @@ pub fn format_cv(cv: &CommunicationValue) -> String {
     let comm_type = cv.get_type().to_string();
     parts.push(format!("{}", comm_type));
 
-    let data: &HashMap<DataTypes, DataValue> = cv.get_data_container();
+    let data: &BTreeMap<DataTypes, DataValue> = cv.get_data_container();
 
     let formated_data =
         format_data_container(data.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
