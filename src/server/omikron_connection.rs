@@ -171,8 +171,9 @@ impl OmikronConnection {
     // -------------------------------------------------------------------------
 
     async fn process_message(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        // Log incoming
-        log_cv_in!(PrintType::Omikron, &cv);
+        if !cv.is_type(CommunicationType::pong) && !cv.is_type(CommunicationType::ping) {
+            log_cv_in!(PrintType::Omikron, &cv);
+        }
 
         let msg_id = cv.get_id();
 
@@ -1055,7 +1056,9 @@ impl OmikronConnection {
     // -------------------------------------------------------------------------
 
     async fn send(self: Arc<Self>, cv: &CommunicationValue) -> OmikronResult<()> {
-        log_cv_out!(PrintType::Omikron, cv);
+        if !cv.is_type(CommunicationType::pong) && !cv.is_type(CommunicationType::ping) {
+            log_cv_out!(PrintType::Omikron, cv);
+        }
 
         let guard = self.sender.lock().await;
         let sender = guard.as_ref().ok_or(OmikronError::NotConnected)?;
