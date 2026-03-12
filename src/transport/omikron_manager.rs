@@ -1,4 +1,4 @@
-use crate::server::omikron_connection::OmikronConnection;
+use crate::transport::omikron_connection::OmikronConnection;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use rand::prelude::IteratorRandom;

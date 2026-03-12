@@ -1,11 +1,12 @@
 use crate::{
     get_private_key, get_public_key, log, log_cv_in, log_cv_out, log_err, log_in,
-    server::{omikron_manager, short_link::add_short_link},
+    server::short_link::add_short_link,
     sql::{
         connection_status::UserStatus,
         sql::{self, get_by_user_id, get_by_username, get_iota_by_id, get_omikron_by_id},
         user_online_tracker::{self},
     },
+    transport::omikron_manager,
     util::{crypto_helper::encrypt, file_util::load_file_vec, logger::PrintType},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -1120,9 +1121,9 @@ impl OmikronConnection {
 // ============================================================================
 
 pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let cert_pem = load_file_vec("certs", "cert.pem").expect("Error loading Pemfile");
+    let cert_pem = load_file_vec("certs", "transport_cert.pem").expect("Error loading Pemfile");
 
-    let key_pem = load_file_vec("certs", "key.pem").expect("Error loading Keyfile");
+    let key_pem = load_file_vec("certs", "transport_key.pem").expect("Error loading Keyfile");
 
     let mut host: Host = epsilon_native::host(port, cert_pem, key_pem).await?;
     log!("OmikronServer listening on port {}", port);

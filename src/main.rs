@@ -1,10 +1,11 @@
 mod server;
 mod sql;
+mod transport;
 mod util;
 
-use crate::server::omikron_connection;
 use crate::sql::sql::initialize_db;
 use crate::sql::sql::print_users;
+use crate::transport::omikron_connection;
 use crate::util::crypto_helper::load_public_key;
 use crate::util::crypto_helper::load_secret_key;
 use crate::util::logger::PrintType;

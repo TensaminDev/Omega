@@ -1,7 +1,7 @@
 use crate::{
     log,
     server::{api, short_link::get_short_link},
-    util::file_util::get_directory,
+    util::file_util::load_file_buf,
 };
 
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::header, web};
@@ -10,14 +10,10 @@ use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, pkcs8_private_keys};
 
-use std::fs::File;
-use std::io::BufReader;
-
 pub async fn start(port: u16) -> anyhow::Result<()> {
-    let mut cert_reader =
-        BufReader::new(File::open(format!("{}/certs/cert.pem", get_directory()))?);
+    let mut cert_reader = load_file_buf("certs", "server_cert.pem")?;
 
-    let mut key_reader = BufReader::new(File::open(format!("{}/certs/key.pem", get_directory()))?);
+    let mut key_reader = load_file_buf("certs", "server_key.pem")?;
 
     let cert_chain: Vec<CertificateDer<'static>> =
         certs(&mut cert_reader).collect::<Result<_, _>>()?;

@@ -1,7 +1,7 @@
 use crate::get_public_key;
-use crate::server::omikron_manager::get_random_omikron;
 use crate::sql::sql;
 use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
+use crate::transport::omikron_manager::get_random_omikron;
 use crate::{
     sql::sql::{get_by_user_id, get_omikron_by_id},
     util::crypto_helper::public_key_to_base64,
@@ -271,11 +271,4 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
         .insert_header((header::ACCESS_CONTROL_ALLOW_HEADERS, "*"))
         .insert_header((header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS"))
         .body(body_bytes)
-}
-
-pub fn bad_request() -> (StatusCode, String) {
-    (StatusCode::BAD_REQUEST, "400 Bad Request".to_string())
-}
-pub fn not_found() -> (StatusCode, String) {
-    (StatusCode::NOT_FOUND, "404 Not Found".to_string())
 }
