@@ -2,6 +2,7 @@ use crate::get_public_key;
 use crate::sql::sql;
 use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
 use crate::transport::omikron_manager::get_random_omikron;
+use crate::util::file_util::get_directory;
 use crate::{
     sql::sql::{get_by_user_id, get_omikron_by_id},
     util::crypto_helper::public_key_to_base64,
@@ -37,7 +38,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
         // DOWNLOAD IOTA FRONTEND
         // ==================================================
         ["api", "download", "iota_frontend"] => {
-            let file_path = "downloads/[iota_frontend].zip";
+            let file_path = format!("{}/downloads/iota_frontend.zip", get_directory());
 
             match std::fs::read(file_path) {
                 Ok(file_bytes) => {
