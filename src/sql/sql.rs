@@ -1,0 +1,765 @@
+use crate::log;
+use once_cell::sync::Lazy;
+use sqlx::{MySql, Pool, Row, mysql::MySqlPoolOptions};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    env,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tokio::sync::RwLock;
+
+/*
+use crate::sql::{
+    iota_omikron_tracker::{get_omikron_for_iota, track_iota_omikron, untrack_iota},
+    sql::{
+        change_about, change_avatar, change_display_name, change_iota_id, change_iota_key,
+        change_keys, change_status, change_username, get_by_id, get_by_username, get_iota_by_id,
+        get_register_id, register_complete_iota, register_complete_user,
+    },
+};
+ */
+
+static SQL_DB: Lazy<Arc<RwLock<Option<Pool<MySql>>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
+
+pub async fn connect() -> Result<Pool<MySql>, sqlx::Error> {
+    let user = env::var("DB_USERNAME").expect("DB_USERNAME is not set");
+    let passwd = env::var("DB_PASSWD").expect("DB_PASSWD is not set");
+    let table = env::var("DB_TABLE").expect("DB_TABLE is not set");
+
+    MySqlPoolOptions::new()
+        .max_connections(200)
+        .connect(&format!(
+            "mysql://{}:{}@127.0.0.1:3306/{}",
+            user, passwd, table
+        ))
+        .await
+}
+// Omega
+// - Omikron
+//   - Iota
+//     - User
+//     - User
+//   - Iota
+//     - User
+//     - User
+// - Omikron
+//   - Iota
+//     - User
+//     - User
+//   - Iota
+//     - User
+//     - User
+pub async fn initialize_db() -> Result<(), sqlx::Error> {
+    let pool = connect().await?;
+    let mut db_lock = SQL_DB.write().await;
+    // create tables
+    // with indexes
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS
+        users (
+        id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        username VARCHAR(15) NOT NULL UNIQUE COLLATE utf8mb4_bin,
+        display VARCHAR(15) COLLATE utf8mb4_bin,
+        status VARCHAR(15) COLLATE utf8mb4_bin,
+        about VARCHAR(200) COLLATE utf8mb4_bin,
+        avatar MEDIUMBLOB,
+        sub_level INT(11) NOT NULL DEFAULT 0,
+        sub_end BIGINT(20) NOT NULL DEFAULT 0,
+        public_key TEXT NOT NULL COLLATE utf8mb4_bin,
+        private_key_hash TEXT NOT NULL COLLATE utf8mb4_bin DEFAULT '',
+        iota_id BIGINT UNSIGNED NOT NULL,
+        token VARCHAR(255) NOT NULL UNIQUE COLLATE utf8mb4_bin
+        )",
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS
+        iotas (
+        id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        public_key VARCHAR(255) NOT NULL COLLATE utf8mb4_bin
+        )",
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS
+        omikrons (
+        id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+        public_key VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
+        location VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
+        ip_address VARCHAR(255) NOT NULL COLLATE utf8mb4_bin
+        )",
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS
+        notifications (
+        id BIGINT UNSIGNED NOT NULL PRIMARY KEY AUTO INCREMENT,
+        sender_id BIGINT UNSIGNED NOT NULL,
+        receiver_id BIGINT UNSIGNED NOT NULL,
+        amount BIGINT UNSIGNED NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(&pool)
+    .await;
+    *db_lock = Some(pool);
+    Ok(())
+}
+
+// ==========================================================================================
+//                                           REGISTER
+// ==========================================================================================
+pub static CURRENT_MILLI_USED: Lazy<Arc<AtomicU64>> = Lazy::new(|| Arc::new(AtomicU64::new(0)));
+pub static CURRENT_REGISTER_PROCESS: Lazy<Arc<RwLock<Vec<u64>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(Vec::new())));
+
+pub async fn get_register_id() -> u64 {
+    let mut current_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    loop {
+        let current_locked = CURRENT_MILLI_USED.load(Ordering::SeqCst);
+
+        if current_locked < current_time {
+            let result = CURRENT_MILLI_USED.compare_exchange(
+                current_locked,   // expected value
+                current_time,     // new value
+                Ordering::SeqCst, // acquire/release ordering
+                Ordering::SeqCst, // failure ordering
+            );
+
+            match result {
+                Ok(_) => {
+                    CURRENT_REGISTER_PROCESS.write().await.push(current_time);
+                    return current_time;
+                }
+                Err(_) => {
+                    continue;
+                }
+            }
+        } else {
+            current_time = current_locked + 1;
+        }
+    }
+}
+
+// ==========================================================================================
+//                                           USERS
+// ==========================================================================================
+
+pub async fn get_by_username(
+    username: &str,
+) -> Result<
+    (
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
+        i32,
+        i64,
+        String,
+        String,
+        String,
+    ),
+    sqlx::Error,
+> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    let row = sqlx::query(
+        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE username = ?",
+    )
+    .bind(username)
+    .fetch_optional(&pool)
+    .await?;
+
+    match row {
+        Some(row) => {
+            let id: i64 = row.get("id");
+            let iota_id: i64 = row.get("iota_id");
+            let username: String = row.get("username");
+            let display: Option<Vec<u8>> = row.get("display");
+            let status: Option<Vec<u8>> = row.get("status");
+            let about: Option<Vec<u8>> = row.get("about");
+            let avatar: Option<Vec<u8>> = row.get("avatar");
+            let sub_level: i32 = row.get("sub_level");
+            let sub_end: i64 = row.get("sub_end");
+            let public_key: String = row.get("public_key");
+            let private_key_hash: String = row.get("private_key_hash");
+            let token: Vec<u8> = row.get("token");
+
+            Ok((
+                id,
+                iota_id,
+                username,
+                display.map(|d| String::from_utf8_lossy(&d).to_string()),
+                status.map(|s| String::from_utf8_lossy(&s).to_string()),
+                about.map(|a| String::from_utf8_lossy(&a).to_string()),
+                avatar,
+                sub_level,
+                sub_end,
+                public_key,
+                private_key_hash,
+                String::from_utf8_lossy(&token).to_string(),
+            ))
+        }
+        _ => Err(sqlx::Error::RowNotFound),
+    }
+}
+
+pub async fn get_by_user_id(
+    id: i64,
+) -> Result<
+    (
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
+        i32,
+        i64,
+        String,
+        String,
+        String,
+    ),
+    sqlx::Error,
+> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    let row = sqlx::query(
+        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE id = CAST(? AS UNSIGNED)",
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await?;
+
+    match row {
+        Some(row) => {
+            let id: i64 = row.get("id");
+            let iota_id: i64 = row.get("iota_id");
+            let username: String = row.get("username");
+            let display: Option<Vec<u8>> = row.get("display");
+            let status: Option<Vec<u8>> = row.get("status");
+            let about: Option<Vec<u8>> = row.get("about");
+            let avatar: Option<Vec<u8>> = row.get("avatar");
+            let sub_level: i32 = row.get("sub_level");
+            let sub_end: i64 = row.get("sub_end");
+            let public_key: String = row.get("public_key");
+            let private_key_hash: String = row.get("private_key_hash");
+            let token: Vec<u8> = row.get("token");
+
+            Ok((
+                id,
+                iota_id,
+                username,
+                display.map(|d| String::from_utf8_lossy(&d).to_string()),
+                status.map(|s| String::from_utf8_lossy(&s).to_string()),
+                about.map(|a| String::from_utf8_lossy(&a).to_string()),
+                avatar,
+                sub_level,
+                sub_end,
+                public_key,
+                private_key_hash,
+                String::from_utf8_lossy(&token).to_string(),
+            ))
+        }
+        _ => Err(sqlx::Error::RowNotFound),
+    }
+}
+
+pub async fn get_users_by_iota_id(
+    iota_id_param: i64,
+) -> Result<
+    Vec<(
+        i64,
+        i64,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<Vec<u8>>,
+        i32,
+        i64,
+        String,
+        String,
+        String,
+    )>,
+    sqlx::Error,
+> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    let rows = sqlx::query(
+        "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, private_key_hash, token FROM users WHERE iota_id = CAST(? AS UNSIGNED)",
+    )
+    .bind(iota_id_param)
+    .fetch_all(&pool)
+    .await?;
+
+    let mut users = Vec::new();
+    for row in rows {
+        let id: i64 = row.get("id");
+        let iota_id: i64 = row.get("iota_id");
+        let username: String = row.get("username");
+        let display: Option<Vec<u8>> = row.get("display");
+        let status: Option<Vec<u8>> = row.get("status");
+        let about: Option<Vec<u8>> = row.get("about");
+        let avatar: Option<Vec<u8>> = row.get("avatar");
+        let sub_level: i32 = row.get("sub_level");
+        let sub_end: i64 = row.get("sub_end");
+        let public_key: String = row.get("public_key");
+        let private_key_hash: String = row.get("private_key_hash");
+        let token: Vec<u8> = row.get("token");
+
+        users.push((
+            id,
+            iota_id,
+            username,
+            display.map(|d| String::from_utf8_lossy(&d).to_string()),
+            status.map(|s| String::from_utf8_lossy(&s).to_string()),
+            about.map(|a| String::from_utf8_lossy(&a).to_string()),
+            avatar,
+            sub_level,
+            sub_end,
+            public_key,
+            private_key_hash,
+            String::from_utf8_lossy(&token).to_string(),
+        ));
+    }
+
+    Ok(users)
+}
+
+pub async fn change_username(id: i64, new_username: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET username = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_username)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn change_display_name(id: i64, new_display: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET display = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_display)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn change_avatar(id: i64, new_avatar: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET avatar = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_avatar)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn change_about(id: i64, new_about: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET about = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_about)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn change_status(id: i64, new_status: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET status = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_status)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn delete_user(id: i64) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("DELETE FROM users WHERE id = CAST(? AS UNSIGNED)")
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+pub async fn change_iota_id(id: i64, new_iota_id: i64) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET iota_id = CAST(? AS UNSIGNED) WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_iota_id)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn change_keys(
+    id: i64,
+    new_public_key: String,
+    new_private_key_hash: String,
+) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query(
+        "UPDATE users SET public_key = ?, private_key_hash = ? WHERE id = CAST(? AS UNSIGNED)",
+    )
+    .bind(new_public_key)
+    .bind(new_private_key_hash)
+    .bind(id)
+    .execute(&pool)
+    .await?;
+
+    Ok(())
+}
+pub async fn change_token(id: i64, new_token: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE users SET token = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_token)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+pub async fn register_complete_user(
+    id: i64,
+    username: String,
+    public_key: String,
+    iota_id: i64,
+    token: String,
+) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query(
+        "INSERT INTO users (id, username, public_key, iota_id, token) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(username)
+    .bind(public_key)
+    .bind(iota_id)
+    .bind(token)
+    .execute(&pool)
+    .await?;
+
+    Ok(())
+}
+pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    log!("Printing users...");
+    for row in sqlx::query(
+        "SELECT id, iota_id, username, display, status, about, sub_level, sub_end, public_key, private_key_hash, token FROM users",
+    )
+    .fetch_all(&pool)
+    .await?
+    .iter()
+    {
+        let id: i64 = row.get("id");
+        let iota_id: i64 = row.get("iota_id");
+        let username: String = row.get("username");
+        let display: Option<Vec<u8>> = row.get("display");
+        let status: Option<Vec<u8>> = row.get("status");
+        let about: Option<Vec<u8>> = row.get("about");
+        let sub_level: i32 = row.get("sub_level");
+        let sub_end: i64 = row.get("sub_end");
+
+        log!(
+            "User: {:?}",
+            (
+                id,
+                iota_id,
+                username,
+                display.map_or("".to_string(), |d| String::from_utf8_lossy(&d).to_string()),
+                status.map_or("".to_string(), |s| String::from_utf8_lossy(&s).to_string()),
+                about.map_or("".to_string(), |a| String::from_utf8_lossy(&a).to_string()),
+                sub_level,
+                sub_end
+            )
+        );
+    }
+
+    Ok(())
+}
+
+// ==========================================================================================
+//                                                IOTA
+// ==========================================================================================
+pub async fn create_new_iota(public_key: String) -> Result<i64, sqlx::Error> {
+    let new_id = get_register_id().await as i64;
+    register_complete_iota(new_id, public_key).await?;
+    Ok(new_id)
+}
+
+pub async fn register_complete_iota(id: i64, public_key: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("INSERT INTO iotas (id, public_key) VALUES (?, ?)")
+        .bind(id)
+        .bind(public_key)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    let result = sqlx::query_as::<_, (u64, Vec<u8>)>(
+        "SELECT id, public_key FROM iotas WHERE id = CAST(? AS UNSIGNED)",
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await;
+
+    match result {
+        Ok(optional_row) => match optional_row {
+            Some((id_u64, public_key)) => Ok((
+                id_u64 as i64,
+                String::from_utf8_lossy(&public_key).to_string(),
+            )),
+            _ => Err(sqlx::Error::RowNotFound),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+pub async fn change_iota_key(id: i64, new_key: String) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("UPDATE iotas SET public_key = ? WHERE id = CAST(? AS UNSIGNED)")
+        .bind(new_key)
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn delete_iota(id: i64) -> Result<(), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    sqlx::query("DELETE FROM iotas WHERE id = CAST(? AS UNSIGNED)")
+        .bind(id)
+        .execute(&pool)
+        .await?;
+
+    Ok(())
+}
+
+// ==========================================================================================
+//                                         OMIKRONS
+// ==========================================================================================
+
+pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error> {
+    let pool = {
+        let db_lock = SQL_DB.read().await;
+        db_lock
+            .as_ref()
+            .cloned()
+            .expect("Database pool not initialized")
+    };
+
+    let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT public_key, ip_address FROM omikrons WHERE id = CAST(? AS UNSIGNED)",
+    )
+    .bind(id)
+    .fetch_optional(&pool)
+    .await?;
+
+    match row {
+        Some((public_key, ip_address)) => Ok((
+            String::from_utf8_lossy(&public_key).to_string(),
+            String::from_utf8_lossy(&ip_address).to_string(),
+        )),
+        _ => Err(sqlx::Error::RowNotFound),
+    }
+}
+
+// ==========================================================================================
+//                                         PHI
+// ==========================================================================================
+
+pub async fn add_notification(sender_id: i64, receiver_id: i64) -> Result<(), sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query(
+        r#"
+        INSERT INTO notifications (sender_id, receiver_id, amount)
+        VALUES (?, ?, 1)
+        ON DUPLICATE KEY UPDATE amount = amount + 1
+        "#,
+    )
+    .bind(sender_id)
+    .bind(receiver_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+pub async fn read_notification(sender_id: i64, receiver_id: i64) -> Result<(), sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query(
+        r#"
+        DELETE FROM notifications WHERE sender_id = ? AND receiver_id = ?
+        "#,
+    )
+    .bind(sender_id)
+    .bind(receiver_id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+pub async fn get_notifications(user_id: i64) -> Result<Vec<(i64, i64)>, sqlx::Error> {
+    let db_lock = SQL_DB.read().await;
+    let pool = db_lock.as_ref().expect("Database pool is not initialized");
+
+    sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT sender_id, amount FROM notifications WHERE receiver_id = ?
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+}
