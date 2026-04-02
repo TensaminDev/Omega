@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -9,13 +9,12 @@ use std::{
 };
 
 use ansi_term::Color;
-use epsilon_core::{CommunicationValue, DataTypes, DataValue};
-use json::JsonValue;
+use ttp_core::{CommunicationValue, DataTypes, DataValue};
 
 static LOGGER: OnceLock<mpsc::Sender<LogMessage>> = OnceLock::new();
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
-#[allow(unused)]
 pub enum PrintType {
     Call,
     Client,
@@ -96,12 +95,14 @@ fn fixed_box(content: &str, width: usize) -> String {
 }
 
 pub fn log_internal(
-    sender: Option<i64>,
+    sender: i64,
     kind: PrintType,
     prefix: &'static str,
     is_error: bool,
     message: String,
 ) {
+    let sender = if sender == 0 { None } else { Some(sender) };
+
     if let Some(tx) = LOGGER.get() {
         let _ = tx.send(LogMessage {
             timestamp_ms: SystemTime::now()
@@ -116,102 +117,28 @@ pub fn log_internal(
         });
     }
 }
-
 #[macro_export]
 macro_rules! log {
-    // plain
-    ($($arg:tt)*) => {
-        $crate::util::logger::log_internal(
-            None,
-            $crate::util::logger::PrintType::General,
-            "",
-            false,
-            format!($($arg)*)
-        )
-    };
-
-    // sender + actor
-    ($sender:expr, $kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(Some($sender), $kind, "", false, format!($($arg)*))
-    };
-
-    // actor only
-    ($kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(None, $kind, "", false, format!($($arg)*))
+    ($sender: expr, $kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal($sender, $kind, "", false, format!($($arg)*))
     };
 }
-
 #[macro_export]
 macro_rules! log_in {
-    // sender + actor
-    ($sender:expr, $kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(Some($sender), $kind, ">", false, format!($($arg)*))
-    };
-
-    // actor only
-    ($kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(None, $kind, ">", false, format!($($arg)*))
-    };
-
-    // plain
-    ($($arg:tt)*) => {
-        $crate::util::logger::log_internal(
-            None,
-            $crate::util::logger::PrintType::General,
-            ">",
-            false,
-            format!($($arg)*)
-        )
+    ($sender: expr, $kind:expr, $($arg:tt)*) => {
+        $crate::util::logger::log_internal($sender, $kind, ">", false, format!($($arg)*))
     };
 }
-
 #[macro_export]
 macro_rules! log_out {
-
-    // sender + actor
     ($sender:expr, $kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(Some($sender), $kind, "<", false, format!($($arg)*))
-    };
-
-    // actor only
-    ($kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(None, $kind, "<", false, format!($($arg)*))
-    };
-
-    // plain
-    ($($arg:tt)*) => {
-        $crate::util::logger::log_internal(
-            None,
-            $crate::util::logger::PrintType::General,
-            "<",
-            false,
-            format!($($arg)*)
-        )
+        $crate::util::logger::log_internal($sender, $kind, "<", false, format!($($arg)*))
     };
 }
-
 #[macro_export]
 macro_rules! log_err {
-
-    // sender + actor
     ($sender:expr, $kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(Some($sender), $kind, ">>", true, format!($($arg)*))
-    };
-
-    // actor only
-    ($kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(None, $kind, ">>", true, format!($($arg)*))
-    };
-
-    // plain
-    ($($arg:tt)*) => {
-        $crate::util::logger::log_internal(
-            None,
-            $crate::util::logger::PrintType::General,
-            ">>",
-            true,
-            format!($($arg)*)
-        )
+        $crate::util::logger::log_internal($sender, $kind, ">>", true, format!($($arg)*))
     };
 }
 
@@ -224,7 +151,7 @@ pub fn log_cv_internal(
     let formatted = format_cv(cv);
 
     log_internal(
-        Some(cv.get_sender() as i64),
+        cv.get_sender() as i64,
         print_type.unwrap_or(PrintType::General),
         prefix,
         false,
@@ -322,6 +249,7 @@ fn format_array(arr: Vec<DataValue>) -> String {
 
     parts.join(", ")
 }
+
 #[macro_export]
 macro_rules! log_cv {
     ($kind:expr, $cv:expr) => {

@@ -8,27 +8,36 @@ use sha2::{Digest, Sha256};
 use x448::{PublicKey, Secret, SharedSecret};
 
 /// Errors for crypto operations
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum CryptoError {
-    Base64Decode,
+    Base64Decode(base64::DecodeError),
+    InvalidKey,
     AgreementError,
     EncryptionError(aes_gcm::Error),
     DecryptionError(aes_gcm::Error),
 }
 
 impl From<base64::DecodeError> for CryptoError {
-    fn from(_: base64::DecodeError) -> Self {
-        CryptoError::Base64Decode
+    fn from(err: base64::DecodeError) -> Self {
+        CryptoError::Base64Decode(err)
     }
 }
 
-pub fn generate_keypair() -> (Secret, PublicKey) {
+#[allow(dead_code)]
+pub struct KeyPair {
+    pub secret: Secret,
+    pub public: PublicKey,
+}
+
+#[allow(dead_code)]
+pub fn generate_keypair() -> KeyPair {
     let mut buf = [0u8; 56];
     let mut rng = OsRng;
     rng.fill_bytes(&mut buf);
     let secret = Secret::from_bytes(&buf).unwrap();
     let public = PublicKey::from(&secret);
-    (secret, public)
+    KeyPair { secret, public }
 }
 
 pub fn public_key_to_base64(pubkey: &PublicKey) -> String {
@@ -58,6 +67,7 @@ fn derive_aes_key(shared: &SharedSecret) -> [u8; 32] {
     key
 }
 
+#[allow(dead_code)]
 pub fn encrypt_b64(
     base64_secret: &str,
     base64_peer_pub: &str,
@@ -125,12 +135,14 @@ pub fn decrypt(
     Ok(plaintext)
 }
 
+#[allow(dead_code)]
 pub fn hash_it(input: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
     hasher.finalize().to_vec()
 }
 
+#[allow(dead_code)]
 pub fn hex_hash(input: &str) -> String {
     let digest = hash_it(input);
     digest.iter().map(|b| format!("{:02x}", b)).collect()

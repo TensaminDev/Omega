@@ -1,2 +1,1 @@
-# Omega
-A loadballancer and Omikron-manager for Tensamin
+# ⚠️ Moved to [git.methanium.net](https://git.methanium.net/tensamin/omikron) ⚠️

@@ -1,19 +1,25 @@
-mod server;
-mod sql;
-mod transport;
+mod anonymous_clients;
+mod calls;
+mod data;
+mod omega;
+mod rho;
 mod util;
 
-use crate::sql::sql::initialize_db;
-use crate::sql::sql::print_users;
-use crate::transport::omikron_connection;
-use crate::util::crypto_helper::load_public_key;
-use crate::util::crypto_helper::load_secret_key;
-use crate::util::logger::PrintType;
-use crate::util::logger::startup;
+use std::env;
+
 use dotenv::dotenv;
 use once_cell::sync::Lazy;
 use rustls::crypto::aws_lc_rs::default_provider;
-use std::env;
+
+use crate::{
+    calls::call_util::garbage_collect_calls,
+    omega::omega_connection::get_omega_connection,
+    rho::server::start,
+    util::{
+        crypto_helper::{load_public_key, load_secret_key},
+        logger::startup,
+    },
+};
 
 static PRIVATE_KEY: Lazy<String> = Lazy::new(|| env::var("PRIVATE_KEY").unwrap());
 pub fn get_private_key() -> x448::Secret {
@@ -32,34 +38,14 @@ async fn main() {
     }
     dotenv().ok();
     startup();
-    log_in!("Incoming messages");
-    log_out!("Outgoing messages");
 
+    get_omega_connection();
     tokio::spawn(async move {
-        match omikron_connection::start(9187).await {
-            Err(e) => log_err!(0, PrintType::General, "{:?}", e),
-            _ => {}
+        if let Err(e) = start(959).await {
+            log_err!(0, util::logger::PrintType::General, "{}", e);
         }
     });
-
-    log!("Started");
-    log!("  .env");
-    if let Err(e) = initialize_db().await {
-        log!("[FATAL] Database initialization failed: {}", e);
-        log!(
-            "[FATAL] Please ensure the database is running and the .env file is configured correctly."
-        );
-        return;
-    } else {
-        log!("  DB");
-    }
-    if let Err(e) = print_users().await {
-        log!("[ERROR] Failed to print users: {}", e);
-    } else {
-        log!("  Users");
-    }
-
-    let _ = server::server::start(9188).await;
+    garbage_collect_calls();
 
     tokio::signal::ctrl_c().await.unwrap();
 }
