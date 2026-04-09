@@ -433,44 +433,40 @@ impl OmikronConnection {
 
     async fn handle_iota_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA connected");
-        if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
-            let iota_id = iota_id as i64;
-            user_online_tracker::track_iota_connection(iota_id, omikron_id, true);
+        let iota_id = cv.get_sender();
+        let iota_id = iota_id as i64;
+        user_online_tracker::track_iota_connection(iota_id, omikron_id, true);
 
-            let mut user_ids = Vec::new();
-            if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
-                for (user_id, _, _, _, _, _, _, _, _, _, _, _) in users {
-                    user_ids.push(DataValue::Number(user_id));
-                    user_online_tracker::track_user_status(
-                        user_id,
-                        UserStatus::user_offline,
-                        omikron_id,
-                    );
-                }
-            } else {
-                log_in!(PrintType::General, "SQL error loading users for IOTA");
+        let mut user_ids = Vec::new();
+        if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
+            for (user_id, _, _, _, _, _, _, _, _, _, _, _) in users {
+                user_ids.push(DataValue::Number(user_id));
+                user_online_tracker::track_user_status(
+                    user_id,
+                    UserStatus::user_offline,
+                    omikron_id,
+                );
             }
-
-            let response = CommunicationValue::new(CommunicationType::iota_user_data)
-                .with_id(cv.get_id())
-                .add_data(DataTypes::user_ids, DataValue::Array(user_ids));
-
-            let _ = self.send(&response).await;
         } else {
-            log_in!(PrintType::General, "No IOTA ID found");
+            log_in!(PrintType::General, "SQL error loading users for IOTA");
         }
+
+        let response = CommunicationValue::new(CommunicationType::iota_user_data)
+            .with_id(cv.get_id())
+            .add_data(DataTypes::user_ids, DataValue::Array(user_ids));
+
+        let _ = self.send(&response).await;
     }
 
     async fn handle_iota_disconnected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA disconnected");
-        if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
-            let iota_id = iota_id as i64;
-            let iota_offline = user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
-            if iota_offline {
-                if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
-                    let user_ids: Vec<i64> = users.iter().map(|u| u.0).collect();
-                    user_online_tracker::untrack_many_users(&user_ids);
-                }
+        let iota_id = cv.get_sender();
+        let iota_id = iota_id as i64;
+        let iota_offline = user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
+        if iota_offline {
+            if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
+                let user_ids: Vec<i64> = users.iter().map(|u| u.0).collect();
+                user_online_tracker::untrack_many_users(&user_ids);
             }
         }
     }
@@ -616,14 +612,13 @@ impl OmikronConnection {
 
     async fn handle_get_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         // Try by iota_id
-        if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
-            if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
-                let response = self
-                    .clone()
-                    .build_iota_data_response(cv.get_id(), iota_id, public_key, None, None)
-                    .await;
-                return self.send(&response).await;
-            }
+        let iota_id = cv.get_sender();
+        if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
+            let response = self
+                .clone()
+                .build_iota_data_response(cv.get_id(), iota_id, public_key, None, None)
+                .await;
+            return self.send(&response).await;
         }
 
         // Try by user_id
@@ -780,19 +775,16 @@ impl OmikronConnection {
             .get_data(DataTypes::public_key)
             .as_str()
             .map(|s| s.to_string());
-        let iota_id = cv
-            .get_data(DataTypes::iota_id)
-            .as_number()
-            .map(|n| n as i64);
+        let iota_id = cv.get_sender();
         let reset_token = cv
             .get_data(DataTypes::reset_token)
             .as_str()
             .map(|s| s.to_string());
 
-        if let (Some(uid), Some(uname), Some(pk), Some(iid), Some(rt)) =
-            (user_id, username, public_key, iota_id, reset_token)
+        if let (Some(uid), Some(uname), Some(pk), Some(rt)) =
+            (user_id, username, public_key, reset_token)
         {
-            match sql::register_complete_user(uid, uname, pk, iid, rt).await {
+            match sql::register_complete_user(uid, uname, pk, iota_id as i64, rt).await {
                 Ok(_) => {
                     let response =
                         CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
@@ -877,10 +869,8 @@ impl OmikronConnection {
     async fn handle_change_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
 
-        if let (Some(iota_id), Some(reset_token), Some(new_token)) = (
-            cv.get_data(DataTypes::iota_id)
-                .as_number()
-                .map(|n| n as i64),
+        if let (iota_id, Some(reset_token), Some(new_token)) = (
+            cv.get_sender(),
             cv.get_data(DataTypes::reset_token).as_str(),
             cv.get_data(DataTypes::new_token).as_str(),
         ) {
@@ -891,7 +881,7 @@ impl OmikronConnection {
                         let mut success = true;
                         let mut error_message = String::new();
 
-                        if let Err(e) = sql::change_iota_id(user_id, iota_id).await {
+                        if let Err(e) = sql::change_iota_id(user_id, iota_id as i64).await {
                             success = false;
                             error_message = e.to_string();
                         }
@@ -950,27 +940,19 @@ impl OmikronConnection {
     }
 
     async fn handle_delete_iota(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        if let Some(iota_id) = cv
-            .get_data(DataTypes::iota_id)
-            .as_number()
-            .map(|n| n as i64)
-        {
-            match sql::delete_iota(iota_id).await {
-                Ok(_) => {
-                    let response =
-                        CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
-                    self.send(&response).await
-                }
-                Err(e) => {
-                    let response = CommunicationValue::new(CommunicationType::error)
-                        .with_id(cv.get_id())
-                        .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
-                    self.send(&response).await
-                }
+        let iota_id = cv.get_sender();
+        match sql::delete_iota(iota_id as i64).await {
+            Ok(_) => {
+                let response =
+                    CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                self.send(&response).await
             }
-        } else {
-            self.send_error_response(cv.get_id(), CommunicationType::error_invalid_data)
-                .await
+            Err(e) => {
+                let response = CommunicationValue::new(CommunicationType::error)
+                    .with_id(cv.get_id())
+                    .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
+                self.send(&response).await
+            }
         }
     }
 
