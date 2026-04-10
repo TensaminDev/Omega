@@ -433,8 +433,10 @@ impl OmikronConnection {
 
     async fn handle_iota_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA connected");
-        let iota_id = cv.get_sender();
-        let iota_id = iota_id as i64;
+        let iota_id = match cv.get_data(DataTypes::iota_id).as_number() {
+            Some(id) => id as i64,
+            None => return,
+        };
         user_online_tracker::track_iota_connection(iota_id, omikron_id, true);
 
         let mut user_ids = Vec::new();
@@ -460,8 +462,10 @@ impl OmikronConnection {
 
     async fn handle_iota_disconnected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA disconnected");
-        let iota_id = cv.get_sender();
-        let iota_id = iota_id as i64;
+        let iota_id = match cv.get_data(DataTypes::iota_id).as_number() {
+            Some(id) => id as i64,
+            None => return,
+        };
         let iota_offline = user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
         if iota_offline {
             if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
@@ -612,13 +616,14 @@ impl OmikronConnection {
 
     async fn handle_get_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         // Try by iota_id
-        let iota_id = cv.get_sender();
-        if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
-            let response = self
-                .clone()
-                .build_iota_data_response(cv.get_id(), iota_id, public_key, None, None)
-                .await;
-            return self.send(&response).await;
+        if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
+            if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
+                let response = self
+                    .clone()
+                    .build_iota_data_response(cv.get_id(), iota_id, public_key, None, None)
+                    .await;
+                return self.send(&response).await;
+            }
         }
 
         // Try by user_id
