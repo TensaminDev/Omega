@@ -1,6 +1,6 @@
 use crate::{
     log,
-    server::{api, short_link::get_short_link},
+    server::{api, index::index_handler, short_link::get_short_link},
     util::file_util::load_file_buf,
 };
 
@@ -37,6 +37,7 @@ pub async fn start(port: u16) -> anyhow::Result<()> {
         App::new()
             .route("/api/{path:.*}", web::to(api_handler))
             .route("/direct/{path:.*}", web::to(direct_handler))
+            .default_service(web::to(index_handler))
     })
     .bind_rustls_0_23(addr, config)?
     .run()
