@@ -23,16 +23,11 @@ use crate::sql::{
 static SQL_DB: Lazy<Arc<RwLock<Option<Pool<MySql>>>>> = Lazy::new(|| Arc::new(RwLock::new(None)));
 
 pub async fn connect() -> Result<Pool<MySql>, sqlx::Error> {
-    let user = env::var("DB_USERNAME").expect("DB_USERNAME is not set");
-    let passwd = env::var("DB_PASSWD").expect("DB_PASSWD is not set");
-    let table = env::var("DB_TABLE").expect("DB_TABLE is not set");
+    let url = env::var("DB_URL").expect("DB_URL is not set");
 
     MySqlPoolOptions::new()
         .max_connections(200)
-        .connect(&format!(
-            "mysql://{}:{}@127.0.0.1:3306/{}",
-            user, passwd, table
-        ))
+        .connect(&url)
         .await
 }
 // Omega
