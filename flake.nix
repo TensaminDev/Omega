@@ -87,6 +87,18 @@
                 '';
               };
 
+              apiPort = lib.mkOption {
+                type = lib.types.port;
+                default = 9188;
+                description = "Port for the web/API server.";
+              };
+
+              transportPort = lib.mkOption {
+                type = lib.types.port;
+                default = 9187;
+                description = "Port for the TTP/QUIC transport server.";
+              };
+
               openFirewall = lib.mkOption {
                 type = lib.types.bool;
                 default = true;
@@ -125,6 +137,11 @@
                   Restart = "always";
                   RestartSec = "5s";
 
+                  Environment = [
+                    "API_PORT=${toString cfg.apiPort}"
+                    "OMIKRON_PORT=${toString cfg.transportPort}"
+                  ];
+
                   EnvironmentFile = cfg.environmentFiles;
 
                   AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
@@ -161,8 +178,8 @@
               };
 
               networking.firewall = lib.mkIf cfg.openFirewall {
-                allowedTCPPorts = [ 9187 9188 ];
-                allowedUDPPorts = [ 9187 9188 ];
+                allowedTCPPorts = [ cfg.transportPort cfg.apiPort ];
+                allowedUDPPorts = [ cfg.transportPort cfg.apiPort ];
               };
             };
           };
