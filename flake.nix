@@ -5,7 +5,7 @@
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     ttp = {
-      url = "git+https://git.methanium.net/Tensamin/TTP.git?rev=929cb9d3a6aebebe6365973f13062ac2a8e03af6";
+      url = "git+https://git.methanium.net/Tensamin/TTP.git?rev=7e5d1953df8592a1feba0f390d205d0ef61a3119";
       flake = false;
     };
   };
@@ -99,6 +99,18 @@
                 description = "Port for the TTP/QUIC transport server.";
               };
 
+              ttpBind = lib.mkOption {
+                type = lib.types.str;
+                default = "0.0.0.0";
+                description = "IP address to bind the TTP/QUIC transport server to.";
+              };
+
+              bindAddress = lib.mkOption {
+                type = lib.types.str;
+                default = "0.0.0.0";
+                description = "IP address to bind the HTTP/API server to.";
+              };
+
               openFirewall = lib.mkOption {
                 type = lib.types.bool;
                 default = true;
@@ -140,6 +152,8 @@
                   Environment = [
                     "API_PORT=${toString cfg.apiPort}"
                     "OMIKRON_PORT=${toString cfg.transportPort}"
+                    "TTP_BIND=${cfg.ttpBind}"
+                    "BIND_ADDRESS=${cfg.bindAddress}"
                   ];
 
                   EnvironmentFile = cfg.environmentFiles;
