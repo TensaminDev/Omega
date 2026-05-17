@@ -966,8 +966,8 @@ impl OmikronConnection {
         cv: CommunicationValue,
     ) -> OmikronResult<()> {
         let user_id = cv.get_sender() as i64;
-        if let Ok(notifications) = sql::get_notifications(user_id).await {
-            let json_array: Vec<DataValue> = notifications
+        let response_array = match sql::get_notifications(user_id).await {
+            Ok(notifications) => notifications
                 .into_iter()
                 .map(|(sender, amount)| {
                     DataValue::Container(vec![
@@ -975,59 +975,90 @@ impl OmikronConnection {
                         (DataTypes::amount, DataValue::Number(amount)),
                     ])
                 })
-                .collect();
+                .collect(),
+            Err(e) => {
+                log!(PrintType::General, "SQL get_notifications error: {}", e);
+                vec![]
+            }
+        };
 
-            let response = CommunicationValue::new(CommunicationType::get_notifications)
-                .with_id(cv.get_id())
-                .add_data(DataTypes::notifications, DataValue::Array(json_array));
-            self.send(&response).await
-        } else {
-            Ok(())
-        }
+        let response = CommunicationValue::new(CommunicationType::get_notifications)
+            .with_id(cv.get_id())
+            .add_data(DataTypes::notifications, DataValue::Array(response_array));
+        self.send(&response).await
     }
 
     async fn handle_read_notification(
         self: Arc<Self>,
         cv: CommunicationValue,
     ) -> OmikronResult<()> {
-        let user_id = cv.get_sender() as i64;
+        let receiver_id = match cv.get_sender() {
+            s if s > 0 => s as i64,
+            _ => match cv.get_data(DataTypes::receiver_id).as_number() {
+                Some(id) => id as i64,
+                None => return Ok(()),
+            },
+        };
+
         if let Some(other_id) = cv
             .get_data(DataTypes::sender_id)
             .as_number()
             .map(|n| n as i64)
         {
-            if sql::read_notification(user_id, other_id).await.is_ok() {
+            if let Err(e) = sql::read_notification(receiver_id, other_id).await {
+                log!(PrintType::General, "SQL read_notification error: {}", e);
+            } else {
                 let response = CommunicationValue::new(CommunicationType::read_notification)
                     .with_id(cv.get_id());
-                self.send(&response).await
-            } else {
-                Ok(())
+                let _ = self.send(&response).await;
+
+                // Sync with Tauri
+                crate::notifications::tauri::remove_notification(receiver_id, other_id).await;
+
+                // Sync with other Omikron clients
+                let sync_cv = CommunicationValue::new(CommunicationType::read_notification)
+                    .with_receiver(receiver_id as u64)
+                    .add_data(DataTypes::sender_id, DataValue::Number(other_id));
+                crate::transport::omikron_manager::send_to_user(receiver_id, &sync_cv).await;
             }
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     async fn handle_push_notification(
         self: Arc<Self>,
         cv: CommunicationValue,
     ) -> OmikronResult<()> {
-        let user_id = cv.get_sender() as i64;
-        if let Some(other_id) = cv
-            .get_data(DataTypes::sender_id)
-            .as_number()
-            .map(|n| n as i64)
-        {
-            if sql::add_notification(user_id, other_id).await.is_ok() {
-                let response = CommunicationValue::new(CommunicationType::push_notification)
-                    .with_id(cv.get_id());
-                self.send(&response).await
-            } else {
-                Ok(())
-            }
+        let receiver_id = match cv.get_receiver() {
+            r if r > 0 => r as i64,
+            _ => match cv.get_data(DataTypes::receiver_id).as_number() {
+                Some(id) => id as i64,
+                None => return Ok(()),
+            },
+        };
+
+        let sender_id = match cv.get_data(DataTypes::sender_id).as_number() {
+            Some(id) => id as i64,
+            None => cv.get_sender() as i64,
+        };
+
+        if let Err(e) = sql::add_notification(receiver_id, sender_id).await {
+            log!(PrintType::General, "SQL add_notification error: {}", e);
         } else {
-            Ok(())
+            let response =
+                CommunicationValue::new(CommunicationType::push_notification).with_id(cv.get_id());
+            let _ = self.send(&response).await;
+
+            // Sync with Tauri
+            crate::notifications::tauri::send_notification(receiver_id, sender_id).await;
+
+            // Sync with other Omikron clients
+            let push_cv = CommunicationValue::new(CommunicationType::push_notification)
+                .with_receiver(receiver_id as u64)
+                .add_data(DataTypes::sender_id, DataValue::Number(sender_id));
+            crate::transport::omikron_manager::send_to_user(receiver_id, &push_cv).await;
         }
+        Ok(())
     }
 
     async fn handle_ping(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {

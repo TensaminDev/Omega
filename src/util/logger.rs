@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -9,7 +9,6 @@ use std::{
 };
 
 use ansi_term::Color;
-use json::JsonValue;
 use ttp_core::{CommunicationValue, DataTypes, DataValue};
 
 static LOGGER: OnceLock<mpsc::Sender<LogMessage>> = OnceLock::new();
@@ -119,6 +118,16 @@ pub fn log_internal(
 
 #[macro_export]
 macro_rules! log {
+    // sender + actor
+    ($sender:expr, $kind:path, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(Some($sender), $kind, "", false, format!($($arg)*))
+    };
+
+    // actor only
+    ($kind:path, $($arg:tt)*) => {
+        $crate::util::logger::log_internal(None, $kind, "", false, format!($($arg)*))
+    };
+
     // plain
     ($($arg:tt)*) => {
         $crate::util::logger::log_internal(
@@ -129,27 +138,17 @@ macro_rules! log {
             format!($($arg)*)
         )
     };
-
-    // sender + actor
-    ($sender:expr, $kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(Some($sender), $kind, "", false, format!($($arg)*))
-    };
-
-    // actor only
-    ($kind:expr, $($arg:tt)*) => {
-        $crate::util::logger::log_internal(None, $kind, "", false, format!($($arg)*))
-    };
 }
 
 #[macro_export]
 macro_rules! log_in {
     // sender + actor
-    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+    ($sender:expr, $kind:path, $($arg:tt)*) => {
         $crate::util::logger::log_internal(Some($sender), $kind, ">", false, format!($($arg)*))
     };
 
     // actor only
-    ($kind:expr, $($arg:tt)*) => {
+    ($kind:path, $($arg:tt)*) => {
         $crate::util::logger::log_internal(None, $kind, ">", false, format!($($arg)*))
     };
 
@@ -167,14 +166,13 @@ macro_rules! log_in {
 
 #[macro_export]
 macro_rules! log_out {
-
     // sender + actor
-    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+    ($sender:expr, $kind:path, $($arg:tt)*) => {
         $crate::util::logger::log_internal(Some($sender), $kind, "<", false, format!($($arg)*))
     };
 
     // actor only
-    ($kind:expr, $($arg:tt)*) => {
+    ($kind:path, $($arg:tt)*) => {
         $crate::util::logger::log_internal(None, $kind, "<", false, format!($($arg)*))
     };
 
@@ -192,14 +190,13 @@ macro_rules! log_out {
 
 #[macro_export]
 macro_rules! log_err {
-
     // sender + actor
-    ($sender:expr, $kind:expr, $($arg:tt)*) => {
+    ($sender:expr, $kind:path, $($arg:tt)*) => {
         $crate::util::logger::log_internal(Some($sender), $kind, ">>", true, format!($($arg)*))
     };
 
     // actor only
-    ($kind:expr, $($arg:tt)*) => {
+    ($kind:path, $($arg:tt)*) => {
         $crate::util::logger::log_internal(None, $kind, ">>", true, format!($($arg)*))
     };
 

@@ -1,8 +1,10 @@
+mod notifications;
 mod server;
 mod sql;
 mod transport;
 mod util;
 
+use crate::notifications::tauri;
 use crate::sql::sql::initialize_db;
 use crate::sql::sql::print_users;
 use crate::transport::omikron_connection;
@@ -37,6 +39,13 @@ async fn main() {
 
     tokio::spawn(async move {
         match omikron_connection::start(9187).await {
+            Err(e) => log_err!(0, PrintType::General, "{:?}", e),
+            _ => {}
+        }
+    });
+
+    tokio::spawn(async move {
+        match tauri::start(9189).await {
             Err(e) => log_err!(0, PrintType::General, "{:?}", e),
             _ => {}
         }
