@@ -30,7 +30,8 @@ pub async fn start(port: u16) -> anyhow::Result<()> {
 
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
-    let addr = format!("0.0.0.0:{port}");
+    let bind_addr = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let addr = format!("{}:{}", bind_addr, port);
     log!("  Server on {}", addr);
 
     HttpServer::new(move || {
