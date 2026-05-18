@@ -10,12 +10,14 @@ use crate::sql::sql::print_users;
 use crate::transport::omikron_connection;
 use crate::util::crypto_helper::load_public_key;
 use crate::util::crypto_helper::load_secret_key;
+use crate::util::file_util::get_directory;
 use crate::util::logger::PrintType;
 use crate::util::logger::startup;
-use dotenv::dotenv;
+use dotenv::from_path;
 use once_cell::sync::Lazy;
 use rustls::crypto::aws_lc_rs::default_provider;
 use std::env;
+use std::path::Path;
 
 static PRIVATE_KEY: Lazy<String> = Lazy::new(|| env::var("PRIVATE_KEY").unwrap());
 pub fn get_private_key() -> x448::Secret {
@@ -32,7 +34,7 @@ async fn main() {
         println!("Error loading Provider");
         return;
     }
-    dotenv().ok();
+    let _ = from_path(Path::new(&get_directory()).join(".env"));
     startup();
     log_in!("Incoming messages");
     log_out!("Outgoing messages");

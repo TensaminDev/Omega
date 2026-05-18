@@ -11,6 +11,8 @@ use std::{
 use ansi_term::Color;
 use ttp_core::{CommunicationValue, DataTypes, DataValue};
 
+use crate::util::file_util::get_directory;
+
 static LOGGER: OnceLock<mpsc::Sender<LogMessage>> = OnceLock::new();
 
 #[derive(Clone, Copy)]
@@ -38,8 +40,8 @@ pub fn startup() {
     LOGGER.set(tx).expect("Logger already initialized");
 
     thread::spawn(move || {
-        let log_dir = Path::new("logs");
-        fs::create_dir_all(log_dir).expect("Failed to create log directory");
+        let log_dir = Path::new(&get_directory()).join("logs");
+        fs::create_dir_all(&log_dir).expect("Failed to create log directory");
 
         let start_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)

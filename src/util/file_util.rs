@@ -1,3 +1,4 @@
+use once_cell::sync::Lazy;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -6,6 +7,10 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::log;
+
+static WORKING_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+});
 
 pub fn delete_file(path: &str, name: &str) -> bool {
     let dir = Path::new(&get_directory()).join(path);
@@ -163,10 +168,11 @@ pub fn get_children(path: &str) -> Vec<String> {
 }
 
 pub fn get_directory() -> String {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .to_string_lossy()
-        .to_string()
+    WORKING_DIR.to_string_lossy().to_string()
+}
+
+pub fn working_dir() -> &'static Path {
+    &WORKING_DIR
 }
 
 // Helper to download the zip file content to a file on disk
