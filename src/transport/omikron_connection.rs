@@ -734,7 +734,7 @@ impl OmikronConnection {
                         self.send(&response).await
                     }
                     Err(e) => {
-                        let response = CommunicationValue::new(CommunicationType::error)
+                        let response = CommunicationValue::new(CommunicationType::error_internal)
                             .with_id(cv.get_id())
                             .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
                         self.send(&response).await
@@ -751,7 +751,7 @@ impl OmikronConnection {
                         self.send(&response).await
                     }
                     Err(e) => {
-                        let response = CommunicationValue::new(CommunicationType::error)
+                        let response = CommunicationValue::new(CommunicationType::error_internal)
                             .with_id(cv.get_id())
                             .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
                         self.send(&response).await
@@ -796,7 +796,7 @@ impl OmikronConnection {
                     self.send(&response).await
                 }
                 Err(e) => {
-                    let response = CommunicationValue::new(CommunicationType::error)
+                    let response = CommunicationValue::new(CommunicationType::error_internal)
                         .with_id(cv.get_id())
                         .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
                     self.send(&response).await
@@ -864,7 +864,7 @@ impl OmikronConnection {
             let response = CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
             self.send(&response).await
         } else {
-            let response = CommunicationValue::new(CommunicationType::error)
+            let response = CommunicationValue::new(CommunicationType::error_internal)
                 .with_id(cv.get_id())
                 .add_data(DataTypes::error_type, DataValue::Str(error_message));
             self.send(&response).await
@@ -903,7 +903,7 @@ impl OmikronConnection {
                                 .with_id(cv.get_id());
                             self.send(&response).await
                         } else {
-                            let response = CommunicationValue::new(CommunicationType::error)
+                            let response = CommunicationValue::new(CommunicationType::error_internal)
                                 .with_id(cv.get_id())
                                 .add_data(DataTypes::error_type, DataValue::Str(error_message));
                             self.send(&response).await
@@ -936,7 +936,7 @@ impl OmikronConnection {
                 self.send(&response).await
             }
             Err(e) => {
-                let response = CommunicationValue::new(CommunicationType::error)
+                let response = CommunicationValue::new(CommunicationType::error_internal)
                     .with_id(cv.get_id())
                     .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
                 self.send(&response).await
@@ -953,7 +953,7 @@ impl OmikronConnection {
                 self.send(&response).await
             }
             Err(e) => {
-                let response = CommunicationValue::new(CommunicationType::error)
+                let response = CommunicationValue::new(CommunicationType::error_internal)
                     .with_id(cv.get_id())
                     .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
                 self.send(&response).await
