@@ -103,7 +103,15 @@ pub struct OmikronConnection {
     pub_key: RwLock<Option<Vec<u8>>>,
     pub ping: RwLock<i64>,
     waiting_tasks: DashMap<u32, WaitingTask>,
-    cleanup_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    cleanup_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl Drop for OmikronConnection {
+    fn drop(&mut self) {
+        if let Some(handle) = self.cleanup_handle.lock().unwrap().take() {
+            handle.abort();
+        }
+    }
 }
 
 impl OmikronConnection {
@@ -120,7 +128,7 @@ impl OmikronConnection {
             pub_key: RwLock::new(None),
             ping: RwLock::new(-1),
             waiting_tasks: DashMap::new(),
-            cleanup_handle: Mutex::new(None),
+            cleanup_handle: std::sync::Mutex::new(None),
         });
 
         conn
@@ -148,7 +156,7 @@ impl OmikronConnection {
                     .retain(|_, v| v.inserted_at.elapsed() < MAX_WAITING_AGE);
             }
         });
-        *self.cleanup_handle.lock().await = Some(cleanup_handle);
+        *self.cleanup_handle.lock().unwrap() = Some(cleanup_handle);
 
         while let Ok(cv) = receiver.receive().await {
             if let Err(e) = self.clone().process_message(cv).await {
@@ -1114,8 +1122,7 @@ impl OmikronConnection {
             }
         }
 
-        // Cancel cleanup task
-        if let Some(handle) = self.cleanup_handle.lock().await.take() {
+        if let Some(handle) = self.cleanup_handle.lock().unwrap().take() {
             handle.abort();
         }
     }

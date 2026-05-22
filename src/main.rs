@@ -44,14 +44,14 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(9187);
 
-    tokio::spawn(async move {
+    let omikron_handle = tokio::spawn(async move {
         match omikron_connection::start(omikron_port).await {
             Err(e) => log_err!(0, PrintType::General, "{:?}", e),
             _ => {}
         }
     });
 
-    tokio::spawn(async move {
+    let tauri_handle = tokio::spawn(async move {
         match tauri::start(9189).await {
             Err(e) => log_err!(0, PrintType::General, "{:?}", e),
             _ => {}
@@ -80,7 +80,17 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(9188);
 
-    let _ = server::server::start(api_port).await;
+    tokio::select! {
+        result = server::server::start(api_port) => {
+            if let Err(e) = result {
+                log_err!(0, PrintType::General, "Server error: {:?}", e);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            log!("Shutting down on signal...");
+        }
+    }
 
-    tokio::signal::ctrl_c().await.unwrap();
+    omikron_handle.abort();
+    tauri_handle.abort();
 }
