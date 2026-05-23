@@ -133,9 +133,9 @@ pub async fn untrack_omikron(omikron_id: i64) {
 
     // Step 4: For offline iotas, remove associated users from USER_STATUS_MAP
     for iota_id in offline_iotas {
-        if let Ok(users) = sql::sql::get_users_by_iota_id(iota_id).await {
+        if let Ok(users) = sql::sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
             for user in users {
-                USER_STATUS_MAP.remove(&user.0);
+                USER_STATUS_MAP.remove(&(user.0 as i64));
             }
         }
         // Finally remove the empty connections vector

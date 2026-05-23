@@ -419,8 +419,8 @@ impl OmikronConnection {
         log_in!(PrintType::Omega, "User connected");
         if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
             user_online_tracker::track_user_status(
-                user_id as i64,
-                UserStatus::user_online,
+                user_id.try_into().unwrap(),
+                UserStatus::user_offline,
                 omikron_id,
             );
         }
@@ -448,11 +448,11 @@ impl OmikronConnection {
         user_online_tracker::track_iota_connection(iota_id, omikron_id, true);
 
         let mut user_ids = Vec::new();
-        if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
+        if let Ok(users) = sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
             for (user_id, _, _, _, _, _, _, _, _, _, _, _) in users {
-                user_ids.push(DataValue::Number(user_id));
+                user_ids.push(DataValue::Number(user_id.try_into().unwrap()));
                 user_online_tracker::track_user_status(
-                    user_id,
+                    user_id.try_into().unwrap(),
                     UserStatus::user_offline,
                     omikron_id,
                 );
@@ -476,8 +476,8 @@ impl OmikronConnection {
         };
         let iota_offline = user_online_tracker::untrack_iota_connection(iota_id, omikron_id);
         if iota_offline {
-            if let Ok(users) = sql::get_users_by_iota_id(iota_id).await {
-                let user_ids: Vec<i64> = users.iter().map(|u| u.0).collect();
+            if let Ok(users) = sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
+                let user_ids: Vec<i64> = users.iter().map(|u| u.0.try_into().unwrap()).collect();
                 user_online_tracker::untrack_many_users(&user_ids);
             }
         }
@@ -489,7 +489,7 @@ impl OmikronConnection {
                 if let DataValue::Number(user_id) = user_id_val {
                     user_online_tracker::track_user_status(
                         *user_id,
-                        UserStatus::user_online,
+                        UserStatus::user_offline,
                         omikron_id,
                     );
                 }
@@ -911,9 +911,10 @@ impl OmikronConnection {
                                 .with_id(cv.get_id());
                             self.send(&response).await
                         } else {
-                            let response = CommunicationValue::new(CommunicationType::error_internal)
-                                .with_id(cv.get_id())
-                                .add_data(DataTypes::error_type, DataValue::Str(error_message));
+                            let response =
+                                CommunicationValue::new(CommunicationType::error_internal)
+                                    .with_id(cv.get_id())
+                                    .add_data(DataTypes::error_type, DataValue::Str(error_message));
                             self.send(&response).await
                         }
                     } else {
