@@ -185,29 +185,29 @@ pub async fn get_by_username(
         Some(row) => {
             let id: i64 = row.get("id");
             let iota_id: i64 = row.get("iota_id");
-            let username: String = row.get("username");
+            let username: Vec<u8> = row.get("username");
             let display: Option<Vec<u8>> = row.get("display");
             let status: Option<Vec<u8>> = row.get("status");
             let about: Option<Vec<u8>> = row.get("about");
             let avatar: Option<Vec<u8>> = row.get("avatar");
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
-            let public_key: String = row.get("public_key");
-            let private_key_hash: String = row.get("private_key_hash");
+            let public_key: Vec<u8> = row.get("public_key");
+            let private_key_hash: Vec<u8> = row.get("private_key_hash");
             let token: Vec<u8> = row.get("token");
 
             Ok((
                 id,
                 iota_id,
-                username,
+                String::from_utf8_lossy(&username).to_string(),
                 display.map(|d| String::from_utf8_lossy(&d).to_string()),
                 status.map(|s| String::from_utf8_lossy(&s).to_string()),
                 about.map(|a| String::from_utf8_lossy(&a).to_string()),
                 avatar,
                 sub_level,
                 sub_end,
-                public_key,
-                private_key_hash,
+                String::from_utf8_lossy(&public_key).to_string(),
+                String::from_utf8_lossy(&private_key_hash).to_string(),
                 String::from_utf8_lossy(&token).to_string(),
             ))
         }
@@ -253,29 +253,29 @@ pub async fn get_by_user_id(
         Some(row) => {
             let id: i64 = row.get("id");
             let iota_id: i64 = row.get("iota_id");
-            let username: String = row.get("username");
+            let username: Vec<u8> = row.get("username");
             let display: Option<Vec<u8>> = row.get("display");
             let status: Option<Vec<u8>> = row.get("status");
             let about: Option<Vec<u8>> = row.get("about");
             let avatar: Option<Vec<u8>> = row.get("avatar");
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
-            let public_key: String = row.get("public_key");
-            let private_key_hash: String = row.get("private_key_hash");
+            let public_key: Vec<u8> = row.get("public_key");
+            let private_key_hash: Vec<u8> = row.get("private_key_hash");
             let token: Vec<u8> = row.get("token");
 
             Ok((
                 id,
                 iota_id,
-                username,
+                String::from_utf8_lossy(&username).to_string(),
                 display.map(|d| String::from_utf8_lossy(&d).to_string()),
                 status.map(|s| String::from_utf8_lossy(&s).to_string()),
                 about.map(|a| String::from_utf8_lossy(&a).to_string()),
                 avatar,
                 sub_level,
                 sub_end,
-                public_key,
-                private_key_hash,
+                String::from_utf8_lossy(&public_key).to_string(),
+                String::from_utf8_lossy(&private_key_hash).to_string(),
                 String::from_utf8_lossy(&token).to_string(),
             ))
         }
@@ -321,29 +321,29 @@ pub async fn get_users_by_iota_id(
     for row in rows {
         let id: i64 = row.get("id");
         let iota_id: i64 = row.get("iota_id");
-        let username: String = row.get("username");
+        let username: Vec<u8> = row.get("username");
         let display: Option<Vec<u8>> = row.get("display");
         let status: Option<Vec<u8>> = row.get("status");
         let about: Option<Vec<u8>> = row.get("about");
         let avatar: Option<Vec<u8>> = row.get("avatar");
         let sub_level: i32 = row.get("sub_level");
         let sub_end: i64 = row.get("sub_end");
-        let public_key: String = row.get("public_key");
-        let private_key_hash: String = row.get("private_key_hash");
+        let public_key: Vec<u8> = row.get("public_key");
+        let private_key_hash: Vec<u8> = row.get("private_key_hash");
         let token: Vec<u8> = row.get("token");
 
         users.push((
             id,
             iota_id,
-            username,
+            String::from_utf8_lossy(&username).to_string(),
             display.map(|d| String::from_utf8_lossy(&d).to_string()),
             status.map(|s| String::from_utf8_lossy(&s).to_string()),
             about.map(|a| String::from_utf8_lossy(&a).to_string()),
             avatar,
             sub_level,
             sub_end,
-            public_key,
-            private_key_hash,
+            String::from_utf8_lossy(&public_key).to_string(),
+            String::from_utf8_lossy(&private_key_hash).to_string(),
             String::from_utf8_lossy(&token).to_string(),
         ));
     }
@@ -361,7 +361,7 @@ pub async fn change_username(id: i64, new_username: String) -> Result<(), sqlx::
     };
 
     sqlx::query("UPDATE users SET username = ? WHERE id = ?")
-        .bind(new_username)
+        .bind(new_username.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -379,7 +379,7 @@ pub async fn change_display_name(id: i64, new_display: String) -> Result<(), sql
     };
 
     sqlx::query("UPDATE users SET display = ? WHERE id = ?")
-        .bind(new_display)
+        .bind(new_display.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -397,7 +397,7 @@ pub async fn change_avatar(id: i64, new_avatar: String) -> Result<(), sqlx::Erro
     };
 
     sqlx::query("UPDATE users SET avatar = ? WHERE id = ?")
-        .bind(new_avatar)
+        .bind(new_avatar.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -415,7 +415,7 @@ pub async fn change_about(id: i64, new_about: String) -> Result<(), sqlx::Error>
     };
 
     sqlx::query("UPDATE users SET about = ? WHERE id = ?")
-        .bind(new_about)
+        .bind(new_about.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -433,7 +433,7 @@ pub async fn change_status(id: i64, new_status: String) -> Result<(), sqlx::Erro
     };
 
     sqlx::query("UPDATE users SET status = ? WHERE id = ?")
-        .bind(new_status)
+        .bind(new_status.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -489,8 +489,8 @@ pub async fn change_keys(
     };
 
     sqlx::query("UPDATE users SET public_key = ?, private_key_hash = ? WHERE id = ?")
-        .bind(new_public_key)
-        .bind(new_private_key_hash)
+        .bind(new_public_key.as_bytes().to_vec())
+        .bind(new_private_key_hash.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -507,7 +507,7 @@ pub async fn change_token(id: i64, new_token: String) -> Result<(), sqlx::Error>
     };
 
     sqlx::query("UPDATE users SET token = ? WHERE id = ?")
-        .bind(new_token)
+        .bind(new_token.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -533,10 +533,10 @@ pub async fn register_complete_user(
         "INSERT INTO users (id, username, public_key, iota_id, token) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(id)
-    .bind(username)
-    .bind(public_key)
+    .bind(username.as_bytes().to_vec())
+    .bind(public_key.as_bytes().to_vec())
     .bind(iota_id)
-    .bind(token)
+    .bind(token.as_bytes().to_vec())
     .execute(&pool)
     .await?;
 
@@ -561,7 +561,7 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
     {
         let id: i64 = row.get("id");
         let iota_id: i64 = row.get("iota_id");
-        let username: String = row.get("username");
+        let username: Vec<u8> = row.get("username");
         let display: Option<Vec<u8>> = row.get("display");
         let status: Option<Vec<u8>> = row.get("status");
         let about: Option<Vec<u8>> = row.get("about");
@@ -573,7 +573,7 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
             (
                 id,
                 iota_id,
-                username,
+                String::from_utf8_lossy(&username).to_string(),
                 display.map_or("".to_string(), |d| String::from_utf8_lossy(&d).to_string()),
                 status.map_or("".to_string(), |s| String::from_utf8_lossy(&s).to_string()),
                 about.map_or("".to_string(), |a| String::from_utf8_lossy(&a).to_string()),
@@ -606,7 +606,7 @@ pub async fn register_complete_iota(id: i64, public_key: String) -> Result<(), s
 
     sqlx::query("INSERT INTO iotas (id, public_key) VALUES (?, ?)")
         .bind(id)
-        .bind(public_key)
+        .bind(public_key.as_bytes().to_vec())
         .execute(&pool)
         .await?;
 
@@ -649,7 +649,7 @@ pub async fn change_iota_key(id: i64, new_key: String) -> Result<(), sqlx::Error
     };
 
     sqlx::query("UPDATE iotas SET public_key = ? WHERE id = ?")
-        .bind(new_key)
+        .bind(new_key.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
         .await?;
