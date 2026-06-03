@@ -381,6 +381,7 @@ impl OmikronConnection {
             CommunicationType::get_notifications => self.handle_get_notifications(cv).await,
             CommunicationType::read_notification => self.handle_read_notification(cv).await,
             CommunicationType::push_notification => self.handle_push_notification(cv).await,
+            CommunicationType::get_states => self.handle_get_states(cv).await,
 
             _ => {
                 log_err!(
@@ -418,9 +419,14 @@ impl OmikronConnection {
     async fn handle_user_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "User connected");
         if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
+            let status = cv
+                .get_data(DataTypes::user_state)
+                .as_str()
+                .and_then(|s| UserStatus::from_str(s))
+                .unwrap_or(UserStatus::user_online);
             user_online_tracker::track_user_status(
                 user_id.try_into().unwrap(),
-                UserStatus::user_offline,
+                status,
                 omikron_id,
             );
         }
@@ -597,9 +603,14 @@ impl OmikronConnection {
             user_online_tracker::get_iota_omikron_connections(iota_id).unwrap_or_default();
 
         if let Some(us) = user_status {
+            let display_status = if us.connection_type == UserStatus::user_invisible {
+                UserStatus::user_offline
+            } else {
+                us.connection_type.clone()
+            };
             response = response.add_data(
                 DataTypes::online_status,
-                DataValue::Str(us.connection_type.to_string()),
+                DataValue::Str(display_status.to_string()),
             );
             response = response.add_data(DataTypes::omikron_id, DataValue::Number(us.omikron_id));
         } else {
@@ -1068,6 +1079,40 @@ impl OmikronConnection {
             crate::transport::omikron_manager::send_to_user(receiver_id, &push_cv).await;
         }
         Ok(())
+    }
+
+    async fn handle_get_states(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
+        let user_ids = match cv.get_data(DataTypes::user_ids) {
+            DataValue::Array(ids) => ids,
+            _ => return Ok(()),
+        };
+
+        let mut states = Vec::new();
+        for id_val in user_ids {
+            if let DataValue::Number(user_id) = id_val {
+                let user_id = *user_id;
+                let status = user_online_tracker::get_user_status(user_id);
+                let status_str = match status {
+                    Some(ref us) => {
+                        if us.connection_type == UserStatus::user_invisible {
+                            "user_offline".to_string()
+                        } else {
+                            us.connection_type.to_string()
+                        }
+                    }
+                    None => UserStatus::iota_offline.to_string(),
+                };
+                let mut map = Vec::new();
+                map.push((DataTypes::user_id, DataValue::Number(user_id)));
+                map.push((DataTypes::user_state, DataValue::Str(status_str)));
+                states.push(DataValue::Container(map));
+            }
+        }
+
+        let response = CommunicationValue::new(CommunicationType::get_states)
+            .with_id(cv.get_id())
+            .add_data(DataTypes::user_states, DataValue::Array(states));
+        self.send(&response).await
     }
 
     async fn handle_ping(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
