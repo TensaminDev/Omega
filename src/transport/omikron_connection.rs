@@ -11,6 +11,9 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
+use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+use mtp::transport::{Host, Policy, Receiver, SendMode, Sender, host};
+use std::net::{IpAddr, Ipv4Addr};
 use rand::{Rng, distributions::Alphanumeric};
 use std::{
     sync::Arc,
@@ -20,8 +23,6 @@ use tokio::{
     sync::{Mutex, RwLock},
     time::interval,
 };
-use ttp_core::{CommunicationType, CommunicationValue, DataTypes, DataValue};
-use ttp_native::{Host, Policy, Receiver, SendMode, Sender};
 use x448::PublicKey;
 
 // ============================================================================
@@ -92,7 +93,7 @@ impl AuthState {
 }
 
 // ============================================================================
-// Omikron Connection (ttp/QUIC-based)
+// Omikron Connection (mtp/QUIC-based)
 // ============================================================================
 
 pub struct OmikronConnection {
@@ -180,7 +181,7 @@ impl OmikronConnection {
     // -------------------------------------------------------------------------
 
     async fn process_message(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        if !cv.is_type(CommunicationType::pong) && !cv.is_type(CommunicationType::ping) {
+        if !cv.is_type(CommunicationType::Pong) && !cv.is_type(CommunicationType::Ping) {
             log_cv_in!(PrintType::Omikron, &cv);
         }
 
@@ -193,7 +194,7 @@ impl OmikronConnection {
         }
 
         // Handle ping regardless of auth state
-        if cv.is_type(CommunicationType::ping) {
+        if cv.is_type(CommunicationType::Ping) {
             return self.handle_ping(cv).await;
         }
 
@@ -213,22 +214,22 @@ impl OmikronConnection {
     // -------------------------------------------------------------------------
 
     async fn handle_unauthenticated(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        if !cv.is_type(CommunicationType::identification) {
+        if !cv.is_type(CommunicationType::Identification) {
             let _ = self
-                .send_error_response(cv.get_id(), CommunicationType::error_not_authenticated)
+                .send_error_response(cv.get_id(), CommunicationType::ErrorNotAuthenticated)
                 .await;
             return Err(OmikronError::NotAuthenticated);
         }
 
         // Extract omikron ID
         let omikron_id = cv
-            .get_data(DataTypes::omikron_id)
+            .get_data(DataType::OmikronId)
             .as_number()
             .ok_or(OmikronError::InvalidResponse)?;
         log!("Omikron {:?} connected", omikron_id);
 
         // Lookup omikron in database
-        let (public_key, _) = get_omikron_by_id(omikron_id)
+        let (public_key, _) = get_omikron_by_id(omikron_id as i64)
             .await
             .map_err(|e| OmikronError::Sql(e.to_string()))?;
 
@@ -261,7 +262,9 @@ impl OmikronConnection {
 
         log!("Stored Pubkey");
 
-        *self.state.write().await = AuthState::Identified { omikron_id };
+        *self.state.write().await = AuthState::Identified {
+            omikron_id: omikron_id as i64,
+        };
 
         log!("Stored State");
 
@@ -279,28 +282,28 @@ impl OmikronConnection {
         log!("Encrypted Challenge");
 
         // Send challenge response
-        let response = CommunicationValue::new(CommunicationType::challenge)
+        let response = CommunicationValue::new(CommunicationType::Challenge)
             .with_id(cv.get_id())
-            .add_data(
-                DataTypes::public_key,
+            .add_typed_default(
+                DataType::PublicKey,
                 DataValue::Str(STANDARD.encode(get_public_key().as_bytes())),
             )
-            .add_data(DataTypes::challenge, DataValue::Str(encrypted));
+            .add_typed_default(DataType::Content, DataValue::Str(encrypted));
 
         log!("Sending Challenge");
         self.send(&response).await
     }
 
     async fn handle_identified(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        if !cv.is_type(CommunicationType::challenge_response) {
+        if !cv.is_type(CommunicationType::ChallengeResponse) {
             let _ = self
-                .send_error_response(cv.get_id(), CommunicationType::error_not_authenticated)
+                .send_error_response(cv.get_id(), CommunicationType::ErrorNotAuthenticated)
                 .await;
             return Err(OmikronError::NotAuthenticated);
         }
 
         let client_response = cv
-            .get_data(DataTypes::challenge)
+            .get_data(DataType::Content)
             .as_str()
             .ok_or(OmikronError::InvalidResponse)?;
 
@@ -312,16 +315,16 @@ impl OmikronConnection {
 
             omikron_manager::add_omikron(self.clone()).await;
 
-            let response = CommunicationValue::new(CommunicationType::identification_response)
+            let response = CommunicationValue::new(CommunicationType::IdentificationResponse)
                 .with_id(cv.get_id())
-                .add_data(DataTypes::accepted, DataValue::Bool(true));
+                .add_typed_default(DataType::Accepted, DataValue::Bool(true));
 
             self.clone().send(&response).await?;
             log_in!(omikron_id, PrintType::Omega, "Omikron authenticated");
             Ok(())
         } else {
             let _ = self
-                .send_error_response(cv.get_id(), CommunicationType::error_invalid_challenge)
+                .send_error_response(cv.get_id(), CommunicationType::ErrorInvalidChallenge)
                 .await;
             Err(OmikronError::AuthenticationFailed)
         }
@@ -336,52 +339,53 @@ impl OmikronConnection {
         cv: CommunicationValue,
         omikron_id: i64,
     ) -> OmikronResult<()> {
-        match cv.get_type() {
+        let comm_type = cv.get_comm_type_enum();
+        match comm_type {
             // Link shortening
-            CommunicationType::shorten_link => self.handle_shorten_link(cv).await,
+            Some(CommunicationType::ShortenLink) => self.handle_shorten_link(cv).await,
 
             // Online status tracking
-            CommunicationType::user_connected => {
+            Some(CommunicationType::UserConnected) => {
                 self.handle_user_connected(cv, omikron_id).await;
                 Ok(())
             }
-            CommunicationType::user_disconnected => {
+            Some(CommunicationType::UserDisconnected) => {
                 self.handle_user_disconnected(cv, omikron_id).await;
                 Ok(())
             }
-            CommunicationType::iota_connected => {
+            Some(CommunicationType::IotaConnected) => {
                 self.handle_iota_connected(cv, omikron_id).await;
                 Ok(())
             }
-            CommunicationType::iota_disconnected => {
+            Some(CommunicationType::IotaDisconnected) => {
                 self.handle_iota_disconnected(cv, omikron_id).await;
                 Ok(())
             }
-            CommunicationType::sync_client_iota_status => {
+            Some(CommunicationType::SyncClientIotaStatus) => {
                 self.handle_sync_status(cv, omikron_id).await;
                 Ok(())
             }
 
-            CommunicationType::get_user_data => self.handle_get_user_data(cv).await,
-            CommunicationType::get_iota_data => self.handle_get_iota_data(cv).await,
+            Some(CommunicationType::GetUserData) => self.handle_get_user_data(cv).await,
+            Some(CommunicationType::GetIotaData) => self.handle_get_iota_data(cv).await,
 
-            CommunicationType::get_register => self.handle_get_register(cv).await,
-            CommunicationType::complete_register_iota => {
+            Some(CommunicationType::GetRegister) => self.handle_get_register(cv).await,
+            Some(CommunicationType::CompleteRegisterIota) => {
                 self.handle_complete_register_iota(cv).await
             }
-            CommunicationType::complete_register_user => {
+            Some(CommunicationType::CompleteRegisterUser) => {
                 self.handle_complete_register_user(cv).await
             }
 
-            CommunicationType::change_user_data => self.handle_change_user_data(cv).await,
-            CommunicationType::change_iota_data => self.handle_change_iota_data(cv).await,
-            CommunicationType::delete_user => self.handle_delete_user(cv).await,
-            CommunicationType::delete_iota => self.handle_delete_iota(cv).await,
+            Some(CommunicationType::ChangeUserData) => self.handle_change_user_data(cv).await,
+            Some(CommunicationType::ChangeIotaData) => self.handle_change_iota_data(cv).await,
+            Some(CommunicationType::DeleteUser) => self.handle_delete_user(cv).await,
+            Some(CommunicationType::DeleteIota) => self.handle_delete_iota(cv).await,
 
-            CommunicationType::get_notifications => self.handle_get_notifications(cv).await,
-            CommunicationType::read_notification => self.handle_read_notification(cv).await,
-            CommunicationType::push_notification => self.handle_push_notification(cv).await,
-            CommunicationType::get_states => self.handle_get_states(cv).await,
+            Some(CommunicationType::GetNotifications) => self.handle_get_notifications(cv).await,
+            Some(CommunicationType::ReadNotification) => self.handle_read_notification(cv).await,
+            Some(CommunicationType::PushNotification) => self.handle_push_notification(cv).await,
+            Some(CommunicationType::GetStates) => self.handle_get_states(cv).await,
 
             _ => {
                 log_err!(
@@ -401,7 +405,7 @@ impl OmikronConnection {
 
     async fn handle_shorten_link(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let link = cv
-            .get_data(DataTypes::link)
+            .get_data(DataType::Link)
             .as_str()
             .ok_or(OmikronError::InvalidResponse)?;
 
@@ -409,32 +413,28 @@ impl OmikronConnection {
             .await
             .map_err(|_| OmikronError::Sql("Shortend link Error".to_string()))?;
 
-        let response = CommunicationValue::new(CommunicationType::shorten_link)
+        let response = CommunicationValue::new(CommunicationType::ShortenLink)
             .with_id(cv.get_id())
-            .add_data(DataTypes::link, DataValue::Str(short));
+            .add_typed_default(DataType::Link, DataValue::Str(short));
 
         self.send(&response).await
     }
 
     async fn handle_user_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "User connected");
-        if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
+        if let Some(user_id) = cv.get_data(DataType::UserId).as_number() {
             let status = cv
-                .get_data(DataTypes::user_state)
+                .get_data(DataType::UserState)
                 .as_str()
                 .and_then(|s| UserStatus::from_str(s))
                 .unwrap_or(UserStatus::user_online);
-            user_online_tracker::track_user_status(
-                user_id.try_into().unwrap(),
-                status,
-                omikron_id,
-            );
+            user_online_tracker::track_user_status(user_id.try_into().unwrap(), status, omikron_id);
         }
     }
 
     async fn handle_user_disconnected(self: Arc<Self>, cv: CommunicationValue, _omikron_id: i64) {
         log_in!(PrintType::Omega, "User disconnected");
-        if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
+        if let Some(user_id) = cv.get_data(DataType::UserId).as_number() {
             if let Some(status) = user_online_tracker::get_user_status(user_id as i64) {
                 user_online_tracker::track_user_status(
                     user_id as i64,
@@ -447,7 +447,7 @@ impl OmikronConnection {
 
     async fn handle_iota_connected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA connected");
-        let iota_id = match cv.get_data(DataTypes::iota_id).as_number() {
+        let iota_id = match cv.get_data(DataType::IotaId).as_number() {
             Some(id) => id as i64,
             None => return,
         };
@@ -456,7 +456,7 @@ impl OmikronConnection {
         let mut user_ids = Vec::new();
         if let Ok(users) = sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
             for (user_id, _, _, _, _, _, _, _, _, _, _, _) in users {
-                user_ids.push(DataValue::Number(user_id.try_into().unwrap()));
+                user_ids.push(DataValue::SignedNumber(user_id.try_into().unwrap()));
                 user_online_tracker::track_user_status(
                     user_id.try_into().unwrap(),
                     UserStatus::user_offline,
@@ -467,16 +467,16 @@ impl OmikronConnection {
             log_in!(PrintType::General, "SQL error loading users for IOTA");
         }
 
-        let response = CommunicationValue::new(CommunicationType::iota_user_data)
+        let response = CommunicationValue::new(CommunicationType::IotaUserData)
             .with_id(cv.get_id())
-            .add_data(DataTypes::user_ids, DataValue::Array(user_ids));
+            .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
 
         let _ = self.send(&response).await;
     }
 
     async fn handle_iota_disconnected(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
         log_in!(PrintType::Omega, "IOTA disconnected");
-        let iota_id = match cv.get_data(DataTypes::iota_id).as_number() {
+        let iota_id = match cv.get_data(DataType::IotaId).as_number() {
             Some(id) => id as i64,
             None => return,
         };
@@ -490,11 +490,11 @@ impl OmikronConnection {
     }
 
     async fn handle_sync_status(self: Arc<Self>, cv: CommunicationValue, omikron_id: i64) {
-        if let DataValue::Array(user_ids) = cv.get_data(DataTypes::user_ids) {
+        if let DataValue::Array(user_ids) = cv.get_data(DataType::UserIds) {
             for user_id_val in user_ids {
-                if let DataValue::Number(user_id) = user_id_val {
+                if let DataValue::SignedNumber(user_id) = user_id_val {
                     user_online_tracker::track_user_status(
-                        *user_id,
+                        *user_id as i64,
                         UserStatus::user_offline,
                         omikron_id,
                     );
@@ -502,10 +502,10 @@ impl OmikronConnection {
             }
         }
 
-        if let DataValue::Array(iota_ids) = cv.get_data(DataTypes::iota_ids) {
+        if let DataValue::Array(iota_ids) = cv.get_data(DataType::IotaIds) {
             for iota_id_val in iota_ids {
-                if let DataValue::Number(iota_id) = iota_id_val {
-                    user_online_tracker::track_iota_connection(*iota_id, omikron_id, true);
+                if let DataValue::SignedNumber(iota_id) = iota_id_val {
+                    user_online_tracker::track_iota_connection(*iota_id as i64, omikron_id, true);
                 }
             }
         }
@@ -513,7 +513,7 @@ impl OmikronConnection {
 
     async fn handle_get_user_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         // Try by user_id first
-        if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
+        if let Some(user_id) = cv.get_data(DataType::UserId).as_number() {
             if let Ok(user_data) = get_by_user_id(user_id as i64).await {
                 let response = self
                     .clone()
@@ -524,7 +524,7 @@ impl OmikronConnection {
         }
 
         // Try by username
-        if let Some(username) = cv.get_data(DataTypes::username).as_str() {
+        if let Some(username) = cv.get_data(DataType::Username).as_str() {
             if let Ok(user_data) = get_by_username(username).await {
                 let response = self
                     .clone()
@@ -536,7 +536,7 @@ impl OmikronConnection {
 
         // Not found
         let response =
-            CommunicationValue::new(CommunicationType::error_not_found).with_id(cv.get_id());
+            CommunicationValue::new(CommunicationType::ErrorNotFound).with_id(cv.get_id());
         self.send(&response).await
     }
 
@@ -573,28 +573,28 @@ impl OmikronConnection {
             _,
         ) = user;
 
-        let mut response = CommunicationValue::new(CommunicationType::get_user_data)
+        let mut response = CommunicationValue::new(CommunicationType::GetUserData)
             .with_id(msg_id)
-            .add_data(DataTypes::username, DataValue::Str(username.clone()))
-            .add_data(DataTypes::public_key, DataValue::Str(public_key))
-            .add_data(DataTypes::user_id, DataValue::Number(id))
-            .add_data(DataTypes::iota_id, DataValue::Number(iota_id))
-            .add_data(DataTypes::sub_level, DataValue::Number(sub_level as i64))
-            .add_data(DataTypes::sub_end, DataValue::Number(sub_end));
+            .add_typed_default(DataType::Username, DataValue::Str(username.clone()))
+            .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
+            .add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()))
+            .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
+            .add_typed_default(DataType::SubLevel, DataValue::SignedNumber(sub_level as i128))
+            .add_typed_default(DataType::SubEnd, DataValue::SignedNumber(sub_end.into()));
 
         // Display name (fallback to username)
         let display_name = display.filter(|d| !d.is_empty()).unwrap_or(username);
-        response = response.add_data(DataTypes::display, DataValue::Str(display_name));
+        response = response.add_typed_default(DataType::Display, DataValue::Str(display_name));
 
         // Optional fields
         if let Some(s) = status.filter(|s| !s.is_empty()) {
-            response = response.add_data(DataTypes::status, DataValue::Str(s));
+            response = response.add_typed_default(DataType::Status, DataValue::Str(s));
         }
         if let Some(a) = about.filter(|a| !a.is_empty()) {
-            response = response.add_data(DataTypes::about, DataValue::Str(a));
+            response = response.add_typed_default(DataType::About, DataValue::Str(a));
         }
         if let Some(av) = avatar {
-            response = response.add_data(DataTypes::avatar, DataValue::Str(STANDARD.encode(av)));
+            response = response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(av)));
         }
 
         // Online status
@@ -608,24 +608,24 @@ impl OmikronConnection {
             } else {
                 us.connection_type.clone()
             };
-            response = response.add_data(
-                DataTypes::online_status,
+            response = response.add_typed_default(
+                DataType::OnlineStatus,
                 DataValue::Str(display_status.to_string()),
             );
-            response = response.add_data(DataTypes::omikron_id, DataValue::Number(us.omikron_id));
+            response = response.add_typed_default(DataType::OmikronId, DataValue::SignedNumber(us.omikron_id.into()));
         } else {
-            response = response.add_data(
-                DataTypes::online_status,
+            response = response.add_typed_default(
+                DataType::OnlineStatus,
                 DataValue::Str(UserStatus::iota_offline.to_string()),
             );
         }
 
-        response = response.add_data(
-            DataTypes::omikron_connections,
+        response = response.add_typed_default(
+            DataType::OmikronConnections,
             DataValue::Array(
                 iota_connections
                     .into_iter()
-                    .map(DataValue::Number)
+                    .map(|id| DataValue::SignedNumber(id as i128))
                     .collect(),
             ),
         );
@@ -635,7 +635,7 @@ impl OmikronConnection {
 
     async fn handle_get_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         // Try by iota_id
-        if let Some(iota_id) = cv.get_data(DataTypes::iota_id).as_number() {
+        if let Some(iota_id) = cv.get_data(DataType::IotaId).as_number() {
             if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
                 let response = self
                     .clone()
@@ -646,7 +646,7 @@ impl OmikronConnection {
         }
 
         // Try by user_id
-        if let Some(user_id) = cv.get_data(DataTypes::user_id).as_number() {
+        if let Some(user_id) = cv.get_data(DataType::UserId).as_number() {
             if let Ok((_, iota_id, _, _, _, _, _, _, _, _, _, _)) =
                 get_by_user_id(user_id as i64).await
             {
@@ -667,7 +667,7 @@ impl OmikronConnection {
         }
 
         // Try by username
-        if let Some(username) = cv.get_data(DataTypes::username).as_str() {
+        if let Some(username) = cv.get_data(DataType::Username).as_str() {
             if let Ok((user_id, iota_id, _, _, _, _, _, _, _, _, _, _)) =
                 get_by_username(username).await
             {
@@ -688,7 +688,7 @@ impl OmikronConnection {
         }
 
         let response =
-            CommunicationValue::new(CommunicationType::error_not_found).with_id(cv.get_id());
+            CommunicationValue::new(CommunicationType::ErrorNotFound).with_id(cv.get_id());
         self.send(&response).await
     }
 
@@ -700,27 +700,27 @@ impl OmikronConnection {
         user_id: Option<i64>,
         username: Option<String>,
     ) -> CommunicationValue {
-        let mut response = CommunicationValue::new(CommunicationType::get_iota_data)
+        let mut response = CommunicationValue::new(CommunicationType::GetIotaData)
             .with_id(msg_id)
-            .add_data(DataTypes::public_key, DataValue::Str(public_key))
-            .add_data(DataTypes::iota_id, DataValue::Number(iota_id));
+            .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
+            .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
 
         if let Some(uid) = user_id {
-            response = response.add_data(DataTypes::user_id, DataValue::Number(uid));
+            response = response.add_typed_default(DataType::UserId, DataValue::SignedNumber(uid.into()));
         }
         if let Some(uname) = username {
-            response = response.add_data(DataTypes::username, DataValue::Str(uname));
+            response = response.add_typed_default(DataType::Username, DataValue::Str(uname));
         }
 
         let iota_connections =
             user_online_tracker::get_iota_omikron_connections(iota_id).unwrap_or_default();
 
-        response.add_data(
-            DataTypes::omikron_connections,
+        response.add_typed_default(
+            DataType::OmikronConnections,
             DataValue::Array(
                 iota_connections
                     .into_iter()
-                    .map(DataValue::Number)
+                    .map(|id| DataValue::SignedNumber(id as i128))
                     .collect(),
             ),
         )
@@ -728,9 +728,9 @@ impl OmikronConnection {
 
     async fn handle_get_register(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let register_id = sql::get_register_id().await;
-        let response = CommunicationValue::new(CommunicationType::get_register)
+        let response = CommunicationValue::new(CommunicationType::GetRegister)
             .with_id(cv.get_id())
-            .add_data(DataTypes::user_id, DataValue::Number(register_id as i64));
+            .add_typed_default(DataType::UserId, DataValue::SignedNumber(register_id as i128));
         self.send(&response).await
     }
 
@@ -738,24 +738,21 @@ impl OmikronConnection {
         self: Arc<Self>,
         cv: CommunicationValue,
     ) -> OmikronResult<()> {
-        let iota_id_opt = cv
-            .get_data(DataTypes::iota_id)
-            .as_number()
-            .map(|n| n as i64);
+        let iota_id_opt = cv.get_data(DataType::IotaId).as_number().map(|n| n as i64);
 
-        if let Some(public_key) = cv.get_data(DataTypes::public_key).as_str() {
+        if let Some(public_key) = cv.get_data(DataType::PublicKey).as_str() {
             if let Some(iota_id) = iota_id_opt {
                 // Register existing IOTA
                 match sql::register_complete_iota(iota_id, public_key.to_string()).await {
                     Ok(_) => {
-                        let response = CommunicationValue::new(CommunicationType::success)
+                        let response = CommunicationValue::new(CommunicationType::Success)
                             .with_id(cv.get_id());
                         self.send(&response).await
                     }
                     Err(e) => {
-                        let response = CommunicationValue::new(CommunicationType::error_internal)
+                        let response = CommunicationValue::new(CommunicationType::ErrorInternal)
                             .with_id(cv.get_id())
-                            .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
+                            .add_typed_default(DataType::ErrorType, DataValue::Str(e.to_string()));
                         self.send(&response).await
                     }
                 }
@@ -764,21 +761,21 @@ impl OmikronConnection {
                 match sql::create_new_iota(public_key.to_string()).await {
                     Ok(new_iota_id) => {
                         let response =
-                            CommunicationValue::new(CommunicationType::complete_register_iota)
+                            CommunicationValue::new(CommunicationType::CompleteRegisterIota)
                                 .with_id(cv.get_id())
-                                .add_data(DataTypes::iota_id, DataValue::Number(new_iota_id));
+                                .add_typed_default(DataType::IotaId, DataValue::SignedNumber(new_iota_id.into()));
                         self.send(&response).await
                     }
                     Err(e) => {
-                        let response = CommunicationValue::new(CommunicationType::error_internal)
+                        let response = CommunicationValue::new(CommunicationType::ErrorInternal)
                             .with_id(cv.get_id())
-                            .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
+                            .add_typed_default(DataType::ErrorType, DataValue::Str(e.to_string()));
                         self.send(&response).await
                     }
                 }
             }
         } else {
-            self.send_error_response(cv.get_id(), CommunicationType::error_invalid_data)
+            self.send_error_response(cv.get_id(), CommunicationType::ErrorInvalidData)
                 .await
         }
     }
@@ -787,21 +784,18 @@ impl OmikronConnection {
         self: Arc<Self>,
         cv: CommunicationValue,
     ) -> OmikronResult<()> {
-        let user_id = cv
-            .get_data(DataTypes::user_id)
-            .as_number()
-            .map(|n| n as i64);
+        let user_id = cv.get_data(DataType::UserId).as_number().map(|n| n as i64);
         let username = cv
-            .get_data(DataTypes::username)
+            .get_data(DataType::Username)
             .as_str()
             .map(|s| s.to_string());
         let public_key = cv
-            .get_data(DataTypes::public_key)
+            .get_data(DataType::PublicKey)
             .as_str()
             .map(|s| s.to_string());
         let iota_id = cv.get_sender();
         let reset_token = cv
-            .get_data(DataTypes::reset_token)
+            .get_data(DataType::ResetToken)
             .as_str()
             .map(|s| s.to_string());
 
@@ -811,18 +805,18 @@ impl OmikronConnection {
             match sql::register_complete_user(uid, uname, pk, iota_id as i64, rt).await {
                 Ok(_) => {
                     let response =
-                        CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                        CommunicationValue::new(CommunicationType::Success).with_id(cv.get_id());
                     self.send(&response).await
                 }
                 Err(e) => {
-                    let response = CommunicationValue::new(CommunicationType::error_internal)
+                    let response = CommunicationValue::new(CommunicationType::ErrorInternal)
                         .with_id(cv.get_id())
-                        .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
+                        .add_typed_default(DataType::ErrorType, DataValue::Str(e.to_string()));
                     self.send(&response).await
                 }
             }
         } else {
-            self.send_error_response(cv.get_id(), CommunicationType::error_invalid_data)
+            self.send_error_response(cv.get_id(), CommunicationType::ErrorInvalidData)
                 .await
         }
     }
@@ -833,39 +827,39 @@ impl OmikronConnection {
         let mut error_message = String::new();
 
         // Process each field
-        if let Some(username) = cv.get_data(DataTypes::username).as_str() {
+        if let Some(username) = cv.get_data(DataType::Username).as_str() {
             if let Err(e) = sql::change_username(user_id, username.to_string()).await {
                 success = false;
                 error_message = e.to_string();
             }
         }
-        if let Some(display) = cv.get_data(DataTypes::display).as_str() {
+        if let Some(display) = cv.get_data(DataType::Display).as_str() {
             if let Err(e) = sql::change_display_name(user_id, display.to_string()).await {
                 success = false;
                 error_message = e.to_string();
             }
         }
-        if let Some(avatar) = cv.get_data(DataTypes::avatar).as_str() {
+        if let Some(avatar) = cv.get_data(DataType::Avatar).as_str() {
             if let Err(e) = sql::change_avatar(user_id, avatar.to_string()).await {
                 success = false;
                 error_message = e.to_string();
             }
         }
-        if let Some(about) = cv.get_data(DataTypes::about).as_str() {
+        if let Some(about) = cv.get_data(DataType::About).as_str() {
             if let Err(e) = sql::change_about(user_id, about.to_string()).await {
                 success = false;
                 error_message = e.to_string();
             }
         }
-        if let Some(status) = cv.get_data(DataTypes::status).as_str() {
+        if let Some(status) = cv.get_data(DataType::Status).as_str() {
             if let Err(e) = sql::change_status(user_id, status.to_string()).await {
                 success = false;
                 error_message = e.to_string();
             }
         }
         if let (Some(public_key), Some(private_key_hash)) = (
-            cv.get_data(DataTypes::public_key).as_str(),
-            cv.get_data(DataTypes::private_key_hash).as_str(),
+            cv.get_data(DataType::PublicKey).as_str(),
+            cv.get_data(DataType::PrivateKeyHash).as_str(),
         ) {
             if let Err(e) = sql::change_keys(
                 user_id,
@@ -880,12 +874,12 @@ impl OmikronConnection {
         }
 
         if success {
-            let response = CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+            let response = CommunicationValue::new(CommunicationType::Success).with_id(cv.get_id());
             self.send(&response).await
         } else {
-            let response = CommunicationValue::new(CommunicationType::error_internal)
+            let response = CommunicationValue::new(CommunicationType::ErrorInternal)
                 .with_id(cv.get_id())
-                .add_data(DataTypes::error_type, DataValue::Str(error_message));
+                .add_typed_default(DataType::ErrorType, DataValue::Str(error_message));
             self.send(&response).await
         }
     }
@@ -895,8 +889,8 @@ impl OmikronConnection {
 
         if let (iota_id, Some(reset_token), Some(new_token)) = (
             cv.get_sender(),
-            cv.get_data(DataTypes::reset_token).as_str(),
-            cv.get_data(DataTypes::new_token).as_str(),
+            cv.get_data(DataType::ResetToken).as_str(),
+            cv.get_data(DataType::NewToken).as_str(),
         ) {
             match sql::get_by_user_id(user_id).await {
                 Ok(user) => {
@@ -918,31 +912,31 @@ impl OmikronConnection {
                         }
 
                         if success {
-                            let response = CommunicationValue::new(CommunicationType::success)
+                            let response = CommunicationValue::new(CommunicationType::Success)
                                 .with_id(cv.get_id());
                             self.send(&response).await
                         } else {
                             let response =
-                                CommunicationValue::new(CommunicationType::error_internal)
+                                CommunicationValue::new(CommunicationType::ErrorInternal)
                                     .with_id(cv.get_id())
-                                    .add_data(DataTypes::error_type, DataValue::Str(error_message));
+                                    .add_typed_default(DataType::ErrorType, DataValue::Str(error_message));
                             self.send(&response).await
                         }
                     } else {
                         self.send_error_response(
                             cv.get_id(),
-                            CommunicationType::error_invalid_challenge,
+                            CommunicationType::ErrorInvalidChallenge,
                         )
                         .await
                     }
                 }
                 Err(_) => {
-                    self.send_error_response(cv.get_id(), CommunicationType::error_not_found)
+                    self.send_error_response(cv.get_id(), CommunicationType::ErrorNotFound)
                         .await
                 }
             }
         } else {
-            self.send_error_response(cv.get_id(), CommunicationType::error_invalid_data)
+            self.send_error_response(cv.get_id(), CommunicationType::ErrorInvalidData)
                 .await
         }
     }
@@ -952,13 +946,13 @@ impl OmikronConnection {
         match sql::delete_user(user_id).await {
             Ok(_) => {
                 let response =
-                    CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                    CommunicationValue::new(CommunicationType::Success).with_id(cv.get_id());
                 self.send(&response).await
             }
             Err(e) => {
-                let response = CommunicationValue::new(CommunicationType::error_internal)
+                let response = CommunicationValue::new(CommunicationType::ErrorInternal)
                     .with_id(cv.get_id())
-                    .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
+                    .add_typed_default(DataType::ErrorType, DataValue::Str(e.to_string()));
                 self.send(&response).await
             }
         }
@@ -969,13 +963,13 @@ impl OmikronConnection {
         match sql::delete_iota(iota_id as i64).await {
             Ok(_) => {
                 let response =
-                    CommunicationValue::new(CommunicationType::success).with_id(cv.get_id());
+                    CommunicationValue::new(CommunicationType::Success).with_id(cv.get_id());
                 self.send(&response).await
             }
             Err(e) => {
-                let response = CommunicationValue::new(CommunicationType::error_internal)
+                let response = CommunicationValue::new(CommunicationType::ErrorInternal)
                     .with_id(cv.get_id())
-                    .add_data(DataTypes::error_type, DataValue::Str(e.to_string()));
+                    .add_typed_default(DataType::ErrorType, DataValue::Str(e.to_string()));
                 self.send(&response).await
             }
         }
@@ -990,9 +984,10 @@ impl OmikronConnection {
             Ok(notifications) => notifications
                 .into_iter()
                 .map(|(sender, amount)| {
+                    let tm = mtp::type_map::TypeMap::latest();
                     DataValue::Container(vec![
-                        (DataTypes::sender_id, DataValue::Number(sender)),
-                        (DataTypes::amount, DataValue::Number(amount)),
+                        (DataType::SenderId.to_id(&tm), DataValue::SignedNumber(sender.into())),
+                        (DataType::Amount.to_id(&tm), DataValue::SignedNumber(amount.into())),
                     ])
                 })
                 .collect(),
@@ -1002,9 +997,9 @@ impl OmikronConnection {
             }
         };
 
-        let response = CommunicationValue::new(CommunicationType::get_notifications)
+        let response = CommunicationValue::new(CommunicationType::GetNotifications)
             .with_id(cv.get_id())
-            .add_data(DataTypes::notifications, DataValue::Array(response_array));
+            .add_typed_default(DataType::Notifications, DataValue::Array(response_array));
         self.send(&response).await
     }
 
@@ -1014,21 +1009,21 @@ impl OmikronConnection {
     ) -> OmikronResult<()> {
         let receiver_id = match cv.get_sender() {
             s if s > 0 => s as i64,
-            _ => match cv.get_data(DataTypes::receiver_id).as_number() {
+            _ => match cv.get_data(DataType::ReceiverId).as_number() {
                 Some(id) => id as i64,
                 None => return Ok(()),
             },
         };
 
         if let Some(other_id) = cv
-            .get_data(DataTypes::sender_id)
+            .get_data(DataType::SenderId)
             .as_number()
             .map(|n| n as i64)
         {
             if let Err(e) = sql::read_notification(receiver_id, other_id).await {
                 log!(PrintType::General, "SQL read_notification error: {}", e);
             } else {
-                let response = CommunicationValue::new(CommunicationType::read_notification)
+                let response = CommunicationValue::new(CommunicationType::ReadNotification)
                     .with_id(cv.get_id());
                 let _ = self.send(&response).await;
 
@@ -1036,9 +1031,9 @@ impl OmikronConnection {
                 crate::notifications::tauri::remove_notification(receiver_id, other_id).await;
 
                 // Sync with other Omikron clients
-                let sync_cv = CommunicationValue::new(CommunicationType::read_notification)
+                let sync_cv = CommunicationValue::new(CommunicationType::ReadNotification)
                     .with_receiver(receiver_id as u64)
-                    .add_data(DataTypes::sender_id, DataValue::Number(other_id));
+                    .add_typed_default(DataType::SenderId, DataValue::SignedNumber(other_id.into()));
                 crate::transport::omikron_manager::send_to_user(receiver_id, &sync_cv).await;
             }
         }
@@ -1051,13 +1046,13 @@ impl OmikronConnection {
     ) -> OmikronResult<()> {
         let receiver_id = match cv.get_receiver() {
             r if r > 0 => r as i64,
-            _ => match cv.get_data(DataTypes::receiver_id).as_number() {
+            _ => match cv.get_data(DataType::ReceiverId).as_number() {
                 Some(id) => id as i64,
                 None => return Ok(()),
             },
         };
 
-        let sender_id = match cv.get_data(DataTypes::sender_id).as_number() {
+        let sender_id = match cv.get_data(DataType::SenderId).as_number() {
             Some(id) => id as i64,
             None => cv.get_sender() as i64,
         };
@@ -1066,31 +1061,31 @@ impl OmikronConnection {
             log!(PrintType::General, "SQL add_notification error: {}", e);
         } else {
             let response =
-                CommunicationValue::new(CommunicationType::push_notification).with_id(cv.get_id());
+                CommunicationValue::new(CommunicationType::PushNotification).with_id(cv.get_id());
             let _ = self.send(&response).await;
 
             // Sync with Tauri
             crate::notifications::tauri::send_notification(receiver_id, sender_id).await;
 
             // Sync with other Omikron clients
-            let push_cv = CommunicationValue::new(CommunicationType::push_notification)
+            let push_cv = CommunicationValue::new(CommunicationType::PushNotification)
                 .with_receiver(receiver_id as u64)
-                .add_data(DataTypes::sender_id, DataValue::Number(sender_id));
+                .add_typed_default(DataType::SenderId, DataValue::SignedNumber(sender_id.into()));
             crate::transport::omikron_manager::send_to_user(receiver_id, &push_cv).await;
         }
         Ok(())
     }
 
     async fn handle_get_states(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        let user_ids = match cv.get_data(DataTypes::user_ids) {
+        let user_ids = match cv.get_data(DataType::UserIds) {
             DataValue::Array(ids) => ids,
             _ => return Ok(()),
         };
 
         let mut states = Vec::new();
         for id_val in user_ids {
-            if let DataValue::Number(user_id) = id_val {
-                let user_id = *user_id;
+            if let DataValue::SignedNumber(user_id) = id_val {
+                let user_id = *user_id as i64;
                 let status = user_online_tracker::get_user_status(user_id);
                 let status_str = match status {
                     Some(ref us) => {
@@ -1102,25 +1097,26 @@ impl OmikronConnection {
                     }
                     None => UserStatus::iota_offline.to_string(),
                 };
+                let tm = mtp::type_map::TypeMap::latest();
                 let mut map = Vec::new();
-                map.push((DataTypes::user_id, DataValue::Number(user_id)));
-                map.push((DataTypes::user_state, DataValue::Str(status_str)));
+                map.push((DataType::UserId.to_id(&tm), DataValue::SignedNumber(user_id.into())));
+                map.push((DataType::UserState.to_id(&tm), DataValue::Str(status_str)));
                 states.push(DataValue::Container(map));
             }
         }
 
-        let response = CommunicationValue::new(CommunicationType::get_states)
+        let response = CommunicationValue::new(CommunicationType::GetStates)
             .with_id(cv.get_id())
-            .add_data(DataTypes::user_states, DataValue::Array(states));
+            .add_typed_default(DataType::UserStates, DataValue::Array(states));
         self.send(&response).await
     }
 
     async fn handle_ping(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        if let DataValue::Number(last_ping) = cv.get_data(DataTypes::last_ping) {
-            *self.ping.write().await = *last_ping;
+        if let DataValue::SignedNumber(last_ping) = cv.get_data(DataType::LastPing) {
+            *self.ping.write().await = *last_ping as i64;
         }
 
-        let response = CommunicationValue::new(CommunicationType::pong).with_id(cv.get_id());
+        let response = CommunicationValue::new(CommunicationType::Pong).with_id(cv.get_id());
         self.send(&response).await
     }
 
@@ -1129,7 +1125,7 @@ impl OmikronConnection {
     // -------------------------------------------------------------------------
 
     async fn send(self: Arc<Self>, cv: &CommunicationValue) -> OmikronResult<()> {
-        if !cv.is_type(CommunicationType::pong) && !cv.is_type(CommunicationType::ping) {
+        if !cv.is_type(CommunicationType::Pong) && !cv.is_type(CommunicationType::Ping) {
             log_cv_out!(PrintType::Omikron, cv);
         }
 
@@ -1196,7 +1192,8 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     let key_pem = load_file_vec("certs", "transport_key.pem").expect("Error loading Keyfile");
 
-    let mut host: Host = ttp_native::host(
+    let mut host: Host = host(
+        IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)),
         port,
         cert_pem,
         key_pem,

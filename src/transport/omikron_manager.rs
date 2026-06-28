@@ -1,9 +1,9 @@
 use crate::transport::omikron_connection::OmikronConnection;
 use dashmap::DashMap;
+use mtp::codec::CommunicationValue;
 use once_cell::sync::Lazy;
 use rand::prelude::IteratorRandom;
 use std::sync::Arc;
-use ttp_core::CommunicationValue;
 
 pub static OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Arc<OmikronConnection>>> =
     Lazy::new(|| DashMap::new());

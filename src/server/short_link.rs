@@ -11,7 +11,7 @@ pub async fn add_short_link(long: &str) -> Result<String, ()> {
     LINKS.insert(raw.clone(), long.to_string());
 
     Ok(format!(
-        "https://omega.tensamin.net/direct/{}",
+        "hmtps://omega.tensamin.net/direct/{}",
         format_with_dashes(&raw)
     ))
 }

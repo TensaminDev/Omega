@@ -28,7 +28,7 @@ pub async fn start(port: u16) -> anyhow::Result<()> {
         .with_no_client_auth()
         .with_single_cert(cert_chain, key)?;
 
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    config.alpn_protocols = vec![b"h2".to_vec(), b"hmtp/1.1".to_vec()];
 
     let bind_addr = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
     let addr = format!("{}:{}", bind_addr, port);
