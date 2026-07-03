@@ -71,8 +71,6 @@ pub struct WaitingTask {
 pub struct OmikronConnection {
     id: u64,
     sender: Mutex<Option<Sender>>,
-    challenge: RwLock<String>,
-    pub_key: RwLock<Option<Vec<u8>>>,
     pub ping: RwLock<i64>,
     waiting_tasks: DashMap<u32, WaitingTask>,
     cleanup_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -91,12 +89,10 @@ impl OmikronConnection {
     // Construction
     // -------------------------------------------------------------------------
 
-    pub fn new(sender: Sender) -> Arc<Self> {
+    pub fn new(sender: Sender, id: u64) -> Arc<Self> {
         let conn = Arc::new(Self {
-            id: rand::random(),
+            id,
             sender: Mutex::new(Some(sender)),
-            challenge: RwLock::new(String::new()),
-            pub_key: RwLock::new(None),
             ping: RwLock::new(-1),
             waiting_tasks: DashMap::new(),
             cleanup_handle: std::sync::Mutex::new(None),
@@ -163,11 +159,14 @@ impl OmikronConnection {
             return Ok(());
         }
 
-        // Handle ping regardless of auth state
+        // Handle ping regardless of message type
         if cv.is_type(CommunicationType::Ping) {
             return self.handle_ping(cv).await;
         }
-        return Ok(());
+
+        // Authentication is completed by the mtp host before this connection exists.
+        let omikron_id = self.id as i64;
+        self.clone().handle_authenticated(cv, omikron_id).await
     }
 
     async fn handle_authenticated(
@@ -1054,7 +1053,7 @@ pub async fn get_by_omikron_id(
         .ok()
         .map(|(bundle, _ip_address)| bundle)
 }
-pub async fn complete_register(pub_key: PublicKeyBundle, description: Option<String>) -> u64 {
+pub async fn complete_register(_pub_key: PublicKeyBundle, _description: Option<String>) -> u64 {
     0
 }
 
@@ -1097,7 +1096,8 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     while let Ok(Some(mut connection)) = host.accept().await {
         tokio::spawn(async move {
-            let conn = OmikronConnection::new(connection.sender);
+            let conn = OmikronConnection::new(connection.sender, connection.client_id);
+            omikron_manager::add_omikron(conn.clone()).await;
             conn.handle(&mut connection.receiver).await;
         });
     }

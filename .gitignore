@@ -27,3 +27,6 @@ target
 # Added by cargo
 
 /target
+
+*.mk
+*.mpkb

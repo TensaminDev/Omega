@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 mtp = { git = "https://git.methanium.net/methanium/mtp", features = [
     "host",
-    "crypto"
+    "crypto",
+    "files",
 ] }
 
 actix-web = { version = "4.12.1", features = ["rustls-0_23"] }
@@ -39,4 +40,6 @@ uuid = { version = "1.19.0", features = ["v4"] }
 x448 = "0.6.0"
 zip = "6.0.0"
 thiserror = "2.0.18"
-mtp-crypto = { git = "https://git.methanium.net/methanium/mtp", version = "0.1.0", features = ["pqc"] }
+mtp-crypto = { git = "https://git.methanium.net/methanium/mtp", version = "0.1.0", features = [
+    "pqc",
+] }

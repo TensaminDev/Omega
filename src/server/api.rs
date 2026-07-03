@@ -1,4 +1,4 @@
-use crate::get_public_key_bundle;
+use crate::load_keyring;
 use crate::sql::sql;
 use crate::sql::sql::{get_by_user_id, get_omikron_by_id};
 use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
@@ -192,7 +192,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
         ["api", "get", "public_key"] => {
             let mut res = JsonValue::new_object();
             res["status"] = "success".into();
-            let bundle = get_public_key_bundle();
+            let bundle = load_keyring().public_key_bundle();
             res["public_key"] = base64::engine::general_purpose::STANDARD
                 .encode(bundle.as_bytes())
                 .into();

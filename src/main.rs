@@ -9,23 +9,32 @@ use crate::transport::omikron_connection;
 use crate::util::file_util::get_directory;
 use crate::util::logger::PrintType;
 use crate::util::logger::startup;
-use base64::Engine as _;
 use dotenv::from_path;
-use mtp_crypto::{Keyring, PublicKeyBundle};
+use mtp::files::{load_keyring as load_keyring_file, save_keyring, save_public_key_bundle};
+use mtp_crypto::Keyring;
 use once_cell::sync::Lazy;
 use rustls::crypto::aws_lc_rs::default_provider;
 use std::env;
 use std::path::Path;
 
-static KEYRING_ENV: Lazy<String> = Lazy::new(|| env::var("KEYRING").unwrap());
-fn load_keyring() -> Keyring {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&*KEYRING_ENV)
-        .expect("Invalid KEYRING env var: not valid base64");
-    Keyring::from_bytes(&bytes).expect("Invalid KEYRING env var: failed to deserialize")
+const KEYRING_PATH: &str = "./omega.mk";
+
+static KEYRING: Lazy<Keyring> = Lazy::new(|| {
+    load_keyring_file(KEYRING_PATH).unwrap_or_else(|_| {
+        let kr = Keyring::generate();
+        save_keyring(&kr, KEYRING_PATH).expect("Failed to save generated keyring");
+        save_public_key_bundle(&kr.public_key_bundle(), KEYRING_PATH)
+            .expect("Failed to save generated public key bundle");
+        eprintln!("Generated new keyring at {}", KEYRING_PATH);
+        kr
+    })
+});
+
+pub fn get_keyring() -> &'static Keyring {
+    &KEYRING
 }
-pub fn get_public_key_bundle() -> PublicKeyBundle {
-    load_keyring().public_key_bundle()
+pub fn load_keyring() -> Keyring {
+    Keyring::from_bytes(&KEYRING.to_bytes()).unwrap()
 }
 
 #[tokio::main]
