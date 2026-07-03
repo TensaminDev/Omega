@@ -26,12 +26,8 @@ fn load_keyring() -> Keyring {
         .expect("Invalid KEYRING env var: not valid base64");
     Keyring::from_bytes(&bytes).expect("Invalid KEYRING env var: failed to deserialize")
 }
-pub fn get_keyring() -> &'static Keyring {
-    static KEYRING: Lazy<Keyring> = Lazy::new(load_keyring);
-    &KEYRING
-}
 pub fn get_public_key_bundle() -> PublicKeyBundle {
-    get_keyring().public_key_bundle()
+    load_keyring().public_key_bundle()
 }
 
 #[tokio::main]

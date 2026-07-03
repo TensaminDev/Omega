@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 mtp = { git = "https://git.methanium.net/methanium/mtp", features = [
     "host",
-    "crypto",
+    "crypto"
 ] }
 
 actix-web = { version = "4.12.1", features = ["rustls-0_23"] }

@@ -1,5 +1,5 @@
 use crate::{
-    get_private_key, get_public_key, log, log_cv_in, log_cv_out, log_err, log_in,
+    get_keyring, get_public_key_bundle, log, log_cv_in, log_cv_out, log_err, log_in,
     server::short_link::add_short_link,
     sql::{
         connection_status::UserStatus,
@@ -7,14 +7,14 @@ use crate::{
         user_online_tracker::{self},
     },
     transport::omikron_manager,
-    util::{crypto_helper::encrypt, file_util::load_file_vec, logger::PrintType},
+    util::{file_util::load_file_vec, logger::PrintType},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
-use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+use mtp::{codec::{CommunicationType, CommunicationValue, DataType, DataValue}, host::{HostConfig, MTPHost}};
 use mtp::transport::{Host, Policy, Receiver, SendMode, Sender, host};
-use std::net::{IpAddr, Ipv4Addr};
 use rand::{Rng, distributions::Alphanumeric};
+use std::net::{IpAddr, Ipv4Addr};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -268,11 +268,12 @@ impl OmikronConnection {
 
         log!("Stored State");
 
-        let challenge_clone = challenge.clone();
-        let private_key = get_private_key();
+        let challenge_clone: String = challenge.clone();
+        let private_key = get_keyring();
         let public_key_for_encrypt = omikron_pub_key;
 
         let encrypted = tokio::task::spawn_blocking(move || {
+            challenge_clone
             encrypt(private_key, public_key_for_encrypt, &challenge_clone)
                 .map_err(|_| OmikronError::AuthenticationFailed)
         })
@@ -286,7 +287,7 @@ impl OmikronConnection {
             .with_id(cv.get_id())
             .add_typed_default(
                 DataType::PublicKey,
-                DataValue::Str(STANDARD.encode(get_public_key().as_bytes())),
+                DataValue::Str(STANDARD.encode(get_public_key_bundle().as_bytes())),
             )
             .add_typed_default(DataType::Content, DataValue::Str(encrypted));
 
@@ -579,7 +580,10 @@ impl OmikronConnection {
             .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
             .add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()))
             .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
-            .add_typed_default(DataType::SubLevel, DataValue::SignedNumber(sub_level as i128))
+            .add_typed_default(
+                DataType::SubLevel,
+                DataValue::SignedNumber(sub_level as i128),
+            )
             .add_typed_default(DataType::SubEnd, DataValue::SignedNumber(sub_end.into()));
 
         // Display name (fallback to username)
@@ -594,7 +598,8 @@ impl OmikronConnection {
             response = response.add_typed_default(DataType::About, DataValue::Str(a));
         }
         if let Some(av) = avatar {
-            response = response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(av)));
+            response =
+                response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(av)));
         }
 
         // Online status
@@ -612,7 +617,10 @@ impl OmikronConnection {
                 DataType::OnlineStatus,
                 DataValue::Str(display_status.to_string()),
             );
-            response = response.add_typed_default(DataType::OmikronId, DataValue::SignedNumber(us.omikron_id.into()));
+            response = response.add_typed_default(
+                DataType::OmikronId,
+                DataValue::SignedNumber(us.omikron_id.into()),
+            );
         } else {
             response = response.add_typed_default(
                 DataType::OnlineStatus,
@@ -706,7 +714,8 @@ impl OmikronConnection {
             .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
 
         if let Some(uid) = user_id {
-            response = response.add_typed_default(DataType::UserId, DataValue::SignedNumber(uid.into()));
+            response =
+                response.add_typed_default(DataType::UserId, DataValue::SignedNumber(uid.into()));
         }
         if let Some(uname) = username {
             response = response.add_typed_default(DataType::Username, DataValue::Str(uname));
@@ -730,7 +739,10 @@ impl OmikronConnection {
         let register_id = sql::get_register_id().await;
         let response = CommunicationValue::new(CommunicationType::GetRegister)
             .with_id(cv.get_id())
-            .add_typed_default(DataType::UserId, DataValue::SignedNumber(register_id as i128));
+            .add_typed_default(
+                DataType::UserId,
+                DataValue::SignedNumber(register_id as i128),
+            );
         self.send(&response).await
     }
 
@@ -763,7 +775,10 @@ impl OmikronConnection {
                         let response =
                             CommunicationValue::new(CommunicationType::CompleteRegisterIota)
                                 .with_id(cv.get_id())
-                                .add_typed_default(DataType::IotaId, DataValue::SignedNumber(new_iota_id.into()));
+                                .add_typed_default(
+                                    DataType::IotaId,
+                                    DataValue::SignedNumber(new_iota_id.into()),
+                                );
                         self.send(&response).await
                     }
                     Err(e) => {
@@ -919,7 +934,10 @@ impl OmikronConnection {
                             let response =
                                 CommunicationValue::new(CommunicationType::ErrorInternal)
                                     .with_id(cv.get_id())
-                                    .add_typed_default(DataType::ErrorType, DataValue::Str(error_message));
+                                    .add_typed_default(
+                                        DataType::ErrorType,
+                                        DataValue::Str(error_message),
+                                    );
                             self.send(&response).await
                         }
                     } else {
@@ -986,8 +1004,14 @@ impl OmikronConnection {
                 .map(|(sender, amount)| {
                     let tm = mtp::type_map::TypeMap::latest();
                     DataValue::Container(vec![
-                        (DataType::SenderId.to_id(&tm), DataValue::SignedNumber(sender.into())),
-                        (DataType::Amount.to_id(&tm), DataValue::SignedNumber(amount.into())),
+                        (
+                            DataType::SenderId.to_id(&tm),
+                            DataValue::SignedNumber(sender.into()),
+                        ),
+                        (
+                            DataType::Amount.to_id(&tm),
+                            DataValue::SignedNumber(amount.into()),
+                        ),
                     ])
                 })
                 .collect(),
@@ -1033,7 +1057,10 @@ impl OmikronConnection {
                 // Sync with other Omikron clients
                 let sync_cv = CommunicationValue::new(CommunicationType::ReadNotification)
                     .with_receiver(receiver_id as u64)
-                    .add_typed_default(DataType::SenderId, DataValue::SignedNumber(other_id.into()));
+                    .add_typed_default(
+                        DataType::SenderId,
+                        DataValue::SignedNumber(other_id.into()),
+                    );
                 crate::transport::omikron_manager::send_to_user(receiver_id, &sync_cv).await;
             }
         }
@@ -1070,7 +1097,10 @@ impl OmikronConnection {
             // Sync with other Omikron clients
             let push_cv = CommunicationValue::new(CommunicationType::PushNotification)
                 .with_receiver(receiver_id as u64)
-                .add_typed_default(DataType::SenderId, DataValue::SignedNumber(sender_id.into()));
+                .add_typed_default(
+                    DataType::SenderId,
+                    DataValue::SignedNumber(sender_id.into()),
+                );
             crate::transport::omikron_manager::send_to_user(receiver_id, &push_cv).await;
         }
         Ok(())
@@ -1099,7 +1129,10 @@ impl OmikronConnection {
                 };
                 let tm = mtp::type_map::TypeMap::latest();
                 let mut map = Vec::new();
-                map.push((DataType::UserId.to_id(&tm), DataValue::SignedNumber(user_id.into())));
+                map.push((
+                    DataType::UserId.to_id(&tm),
+                    DataValue::SignedNumber(user_id.into()),
+                ));
                 map.push((DataType::UserState.to_id(&tm), DataValue::Str(status_str)));
                 states.push(DataValue::Container(map));
             }
@@ -1192,29 +1225,16 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     let key_pem = load_file_vec("certs", "transport_key.pem").expect("Error loading Keyfile");
 
-    let mut host: Host = host(
-        IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)),
+    let mut host: MTPHost = MTPHost::new(
+        HostConfig::new(
+            IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)),
         port,
         cert_pem,
         key_pem,
-        Policy {
-            send_mode: SendMode::SingleStreamPerMessage,
-            max_message_size: 1_000_000_000,
-            close_frame_len: u32::MAX,
-            application_close_code: 0,
-            open_stream_timeout: Duration::from_millis(2_000),
-            write_timeout: Duration::from_millis(2_000),
-            accept_stream_timeout: Duration::from_millis(10_000),
-            read_timeout: Duration::from_millis(30_000),
-            keep_alive_interval: Some(Duration::from_secs(6)),
-            max_idle_timeout: Some(Duration::from_secs(30)),
-            force_close_delay: Duration::from_millis(300),
-            max_transient_recv_errors: 20,
-            transient_recv_backoff: Duration::from_millis(100),
-            receiver_queue_capacity: 1000,
-        },
+            )
     )
     .await?;
+
     log!("OmikronServer listening on port {}", port);
 
     while let Some((sender, mut receiver)) = host.next().await {
