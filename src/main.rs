@@ -8,24 +8,30 @@ use crate::notifications::tauri;
 use crate::sql::sql::initialize_db;
 use crate::sql::sql::print_users;
 use crate::transport::omikron_connection;
-use crate::util::crypto_helper::load_public_key;
-use crate::util::crypto_helper::load_secret_key;
 use crate::util::file_util::get_directory;
 use crate::util::logger::PrintType;
 use crate::util::logger::startup;
+use base64::Engine as _;
 use dotenv::from_path;
+use mtp_crypto::{Keyring, PublicKeyBundle};
 use once_cell::sync::Lazy;
 use rustls::crypto::aws_lc_rs::default_provider;
 use std::env;
 use std::path::Path;
 
-static PRIVATE_KEY: Lazy<String> = Lazy::new(|| env::var("PRIVATE_KEY").unwrap());
-pub fn get_private_key() -> x448::Secret {
-    load_secret_key(&*PRIVATE_KEY).unwrap()
+static KEYRING_ENV: Lazy<String> = Lazy::new(|| env::var("KEYRING").unwrap());
+fn load_keyring() -> Keyring {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&*KEYRING_ENV)
+        .expect("Invalid KEYRING env var: not valid base64");
+    Keyring::from_bytes(&bytes).expect("Invalid KEYRING env var: failed to deserialize")
 }
-static PUBLIC_KEY: Lazy<String> = Lazy::new(|| env::var("PUBLIC_KEY").unwrap());
-pub fn get_public_key() -> x448::PublicKey {
-    load_public_key(&*PUBLIC_KEY).unwrap()
+pub fn get_keyring() -> &'static Keyring {
+    static KEYRING: Lazy<Keyring> = Lazy::new(load_keyring);
+    &KEYRING
+}
+pub fn get_public_key_bundle() -> PublicKeyBundle {
+    get_keyring().public_key_bundle()
 }
 
 #[tokio::main]

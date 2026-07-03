@@ -1,16 +1,16 @@
-use crate::get_public_key;
+use crate::get_public_key_bundle;
 use crate::sql::sql;
 use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
 use crate::transport::omikron_manager::get_random_omikron;
 use crate::util::file_util::get_directory;
 use crate::{
     sql::sql::{get_by_user_id, get_omikron_by_id},
-    util::crypto_helper::public_key_to_base64,
 };
 use actix_web::HttpResponse;
 use actix_web::http::{StatusCode, header};
 use base64::Engine as _;
 use json::JsonValue;
+use mtp_crypto::PublicKeyBundle;
 
 pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
     if path == "OPTIONS" {
@@ -195,7 +195,8 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
         ["api", "get", "public_key"] => {
             let mut res = JsonValue::new_object();
             res["status"] = "success".into();
-            res["public_key"] = public_key_to_base64(&get_public_key()).into();
+            let bundle = get_public_key_bundle();
+            res["public_key"] = base64::engine::general_purpose::STANDARD.encode(bundle.to_bytes()).into();
             (StatusCode::OK, res.dump())
         }
 
