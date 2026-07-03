@@ -1,4 +1,5 @@
 use crate::log;
+use mtp_crypto::PublicKeyBundle;
 use once_cell::sync::Lazy;
 use sqlx::{MySql, Pool, Row, mysql::MySqlPoolOptions};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +62,7 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
         avatar MEDIUMBLOB,
         sub_level INT(11) NOT NULL DEFAULT 0,
         sub_end BIGINT(20) NOT NULL DEFAULT 0,
-        public_key TEXT NOT NULL COLLATE utf8mb4_bin,
+        public_key BLOB NOT NULL,
         private_key_hash TEXT NOT NULL COLLATE utf8mb4_bin DEFAULT '',
         iota_id BIGINT NOT NULL,
         token VARCHAR(256) NOT NULL UNIQUE COLLATE utf8mb4_bin
@@ -73,7 +74,7 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS
         iotas (
         id BIGINT NOT NULL PRIMARY KEY,
-        public_key VARCHAR(255) NOT NULL COLLATE utf8mb4_bin
+        public_key BLOB NOT NULL
         )",
     )
     .execute(&pool)
@@ -82,7 +83,7 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS
         omikrons (
         id BIGINT NOT NULL PRIMARY KEY,
-        public_key VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
+        public_key BLOB NOT NULL,
         location VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
         ip_address VARCHAR(255) NOT NULL COLLATE utf8mb4_bin
         )",
@@ -160,7 +161,7 @@ pub async fn get_by_username(
         Option<Vec<u8>>,
         i32,
         i64,
-        String,
+        PublicKeyBundle,
         String,
         String,
     ),
@@ -192,7 +193,8 @@ pub async fn get_by_username(
             let avatar: Option<Vec<u8>> = row.get("avatar");
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
-            let public_key: Vec<u8> = row.get("public_key");
+            let public_key = PublicKeyBundle::from_bytes(&row.get::<Vec<u8>, _>("public_key"))
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
             let private_key_hash: Vec<u8> = row.get("private_key_hash");
             let token: Vec<u8> = row.get("token");
 
@@ -206,7 +208,7 @@ pub async fn get_by_username(
                 avatar,
                 sub_level,
                 sub_end,
-                String::from_utf8_lossy(&public_key).to_string(),
+                public_key,
                 String::from_utf8_lossy(&private_key_hash).to_string(),
                 String::from_utf8_lossy(&token).to_string(),
             ))
@@ -228,7 +230,7 @@ pub async fn get_by_user_id(
         Option<Vec<u8>>,
         i32,
         i64,
-        String,
+        PublicKeyBundle,
         String,
         String,
     ),
@@ -260,7 +262,8 @@ pub async fn get_by_user_id(
             let avatar: Option<Vec<u8>> = row.get("avatar");
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
-            let public_key: Vec<u8> = row.get("public_key");
+            let public_key = PublicKeyBundle::from_bytes(&row.get::<Vec<u8>, _>("public_key"))
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
             let private_key_hash: Vec<u8> = row.get("private_key_hash");
             let token: Vec<u8> = row.get("token");
 
@@ -274,7 +277,7 @@ pub async fn get_by_user_id(
                 avatar,
                 sub_level,
                 sub_end,
-                String::from_utf8_lossy(&public_key).to_string(),
+                public_key,
                 String::from_utf8_lossy(&private_key_hash).to_string(),
                 String::from_utf8_lossy(&token).to_string(),
             ))
@@ -296,7 +299,7 @@ pub async fn get_users_by_iota_id(
         Option<Vec<u8>>,
         i32,
         i64,
-        String,
+        PublicKeyBundle,
         String,
         String,
     )>,
@@ -328,7 +331,8 @@ pub async fn get_users_by_iota_id(
         let avatar: Option<Vec<u8>> = row.get("avatar");
         let sub_level: i32 = row.get("sub_level");
         let sub_end: i64 = row.get("sub_end");
-        let public_key: Vec<u8> = row.get("public_key");
+        let public_key = PublicKeyBundle::from_bytes(&row.get::<Vec<u8>, _>("public_key"))
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
         let private_key_hash: Vec<u8> = row.get("private_key_hash");
         let token: Vec<u8> = row.get("token");
 
@@ -342,7 +346,7 @@ pub async fn get_users_by_iota_id(
             avatar,
             sub_level,
             sub_end,
-            String::from_utf8_lossy(&public_key).to_string(),
+            public_key,
             String::from_utf8_lossy(&private_key_hash).to_string(),
             String::from_utf8_lossy(&token).to_string(),
         ));
@@ -477,7 +481,7 @@ pub async fn change_iota_id(id: i64, new_iota_id: i64) -> Result<(), sqlx::Error
 
 pub async fn change_keys(
     id: i64,
-    new_public_key: String,
+    new_public_key: PublicKeyBundle,
     new_private_key_hash: String,
 ) -> Result<(), sqlx::Error> {
     let pool = {
@@ -489,7 +493,7 @@ pub async fn change_keys(
     };
 
     sqlx::query("UPDATE users SET public_key = ?, private_key_hash = ? WHERE id = ?")
-        .bind(new_public_key.as_bytes().to_vec())
+        .bind(new_public_key.as_bytes())
         .bind(new_private_key_hash.as_bytes().to_vec())
         .bind(id)
         .execute(&pool)
@@ -517,7 +521,7 @@ pub async fn change_token(id: i64, new_token: String) -> Result<(), sqlx::Error>
 pub async fn register_complete_user(
     id: i64,
     username: String,
-    public_key: String,
+    public_key: PublicKeyBundle,
     iota_id: i64,
     token: String,
 ) -> Result<(), sqlx::Error> {
@@ -534,7 +538,7 @@ pub async fn register_complete_user(
     )
     .bind(id)
     .bind(username.as_bytes().to_vec())
-    .bind(public_key.as_bytes().to_vec())
+    .bind(public_key.as_bytes())
     .bind(iota_id)
     .bind(token.as_bytes().to_vec())
     .execute(&pool)
@@ -589,13 +593,13 @@ pub async fn print_users() -> Result<(), Box<dyn std::error::Error>> {
 // ==========================================================================================
 //                                                IOTA
 // ==========================================================================================
-pub async fn create_new_iota(public_key: String) -> Result<i64, sqlx::Error> {
+pub async fn create_new_iota(public_key: PublicKeyBundle) -> Result<i64, sqlx::Error> {
     let new_id = get_register_id().await as i64;
     register_complete_iota(new_id, public_key).await?;
     Ok(new_id)
 }
 
-pub async fn register_complete_iota(id: i64, public_key: String) -> Result<(), sqlx::Error> {
+pub async fn register_complete_iota(id: i64, public_key: PublicKeyBundle) -> Result<(), sqlx::Error> {
     let pool = {
         let db_lock = SQL_DB.read().await;
         db_lock
@@ -606,14 +610,14 @@ pub async fn register_complete_iota(id: i64, public_key: String) -> Result<(), s
 
     sqlx::query("INSERT INTO iotas (id, public_key) VALUES (?, ?)")
         .bind(id)
-        .bind(public_key.as_bytes().to_vec())
+        .bind(public_key.as_bytes())
         .execute(&pool)
         .await?;
 
     Ok(())
 }
 
-pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
+pub async fn get_iota_by_id(id: i64) -> Result<(i64, PublicKeyBundle), sqlx::Error> {
     let pool = {
         let db_lock = SQL_DB.read().await;
         db_lock
@@ -631,7 +635,9 @@ pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
     match result {
         Ok(optional_row) => match optional_row {
             Some((id_i64, public_key)) => {
-                Ok((id_i64, String::from_utf8_lossy(&public_key).to_string()))
+                let bundle = PublicKeyBundle::from_bytes(&public_key)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                Ok((id_i64, bundle))
             }
             _ => Err(sqlx::Error::RowNotFound),
         },
@@ -639,7 +645,7 @@ pub async fn get_iota_by_id(id: i64) -> Result<(i64, String), sqlx::Error> {
     }
 }
 
-pub async fn change_iota_key(id: i64, new_key: String) -> Result<(), sqlx::Error> {
+pub async fn change_iota_key(id: i64, new_key: PublicKeyBundle) -> Result<(), sqlx::Error> {
     let pool = {
         let db_lock = SQL_DB.read().await;
         db_lock
@@ -649,7 +655,7 @@ pub async fn change_iota_key(id: i64, new_key: String) -> Result<(), sqlx::Error
     };
 
     sqlx::query("UPDATE iotas SET public_key = ? WHERE id = ?")
-        .bind(new_key.as_bytes().to_vec())
+        .bind(new_key.as_bytes())
         .bind(id)
         .execute(&pool)
         .await?;
@@ -678,7 +684,7 @@ pub async fn delete_iota(id: i64) -> Result<(), sqlx::Error> {
 //                                         OMIKRONS
 // ==========================================================================================
 
-pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error> {
+pub async fn get_omikron_by_id(id: i64) -> Result<(PublicKeyBundle, String), sqlx::Error> {
     let pool = {
         let db_lock = SQL_DB.read().await;
         db_lock
@@ -695,10 +701,11 @@ pub async fn get_omikron_by_id(id: i64) -> Result<(String, String), sqlx::Error>
     .await?;
 
     match row {
-        Some((public_key, ip_address)) => Ok((
-            String::from_utf8_lossy(&public_key).to_string(),
-            String::from_utf8_lossy(&ip_address).to_string(),
-        )),
+        Some((public_key, ip_address)) => {
+            let bundle = PublicKeyBundle::from_bytes(&public_key)
+                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+            Ok((bundle, String::from_utf8_lossy(&ip_address).to_string()))
+        }
         _ => Err(sqlx::Error::RowNotFound),
     }
 }

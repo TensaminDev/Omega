@@ -68,7 +68,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                         let mut res = JsonValue::new_object();
                         res["status"] = "success".into();
                         res["id"] = id.into();
-                        res["public_key"] = public_key.into();
+                        res["public_key"] = public_key.to_base64().into();
                         res["ip_address"] = ip_address.into();
 
                         (StatusCode::OK, res.dump())
@@ -103,7 +103,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 let mut res = JsonValue::new_object();
                 res["status"] = "success".into();
                 res["id"] = id.into();
-                res["public_key"] = public_key.into();
+                res["public_key"] = public_key.to_base64().into();
                 res["ip_address"] = ip_address.into();
                 (StatusCode::OK, res.dump())
             } else if let Some(omikron_id) = get_iota_primary_omikron_connection(id) {
@@ -111,7 +111,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                     let mut res = JsonValue::new_object();
                     res["status"] = "success".into();
                     res["id"] = omikron_id.into();
-                    res["public_key"] = public_key.into();
+                    res["public_key"] = public_key.to_base64().into();
                     res["ip_address"] = ip_address.into();
                     (StatusCode::OK, res.dump())
                 } else {
@@ -126,7 +126,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                         let mut res = JsonValue::new_object();
                         res["status"] = "success".into();
                         res["id"] = omikron_id.into();
-                        res["public_key"] = public_key.into();
+                        res["public_key"] = public_key.to_base64().into();
                         res["ip_address"] = ip_address.into();
                         (StatusCode::OK, res.dump())
                     } else {
@@ -172,7 +172,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 let mut res = JsonValue::new_object();
                 res["status"] = "success".into();
                 res["username"] = username.into();
-                res["public_key"] = public_key.into();
+                res["public_key"] = public_key.to_base64().into();
                 res["user_id"] = id.into();
                 res["iota_id"] = iota_id.into();
                 res["sub_level"] = sub_level.into();
@@ -227,7 +227,7 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 let mut res = JsonValue::new_object();
                 res["status"] = "success".into();
                 res["username"] = username.into();
-                res["public_key"] = public_key.into();
+                res["public_key"] = public_key.to_base64().into();
                 res["user_id"] = id.into();
                 res["iota_id"] = iota_id.into();
                 res["sub_level"] = sub_level.into();

@@ -2280,7 +2280,7 @@ dependencies = [
 [[package]]
 name = "mtp"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "mtp-client",
  "mtp-codec",
@@ -2294,7 +2294,7 @@ dependencies = [
 [[package]]
 name = "mtp-client"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -2307,7 +2307,7 @@ dependencies = [
 [[package]]
 name = "mtp-codec"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "base64",
  "byteorder",
@@ -2320,7 +2320,7 @@ dependencies = [
 [[package]]
 name = "mtp-common"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "quinn",
  "rustls",
@@ -2331,8 +2331,9 @@ dependencies = [
 [[package]]
 name = "mtp-crypto"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
+ "base64",
  "chacha20poly1305",
  "ed25519-dalek",
  "getrandom 0.4.3",
@@ -2349,7 +2350,7 @@ dependencies = [
 [[package]]
 name = "mtp-host"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -2362,7 +2363,7 @@ dependencies = [
 [[package]]
 name = "mtp-transport"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "log",
  "mtp-codec",
@@ -2376,7 +2377,7 @@ dependencies = [
 [[package]]
 name = "mtp-type-map"
 version = "0.1.0"
-source = "git+https://git.methanium.net/methanium/mtp#8dc8b54b26544554f98d7af32200d6bf9a01d300"
+source = "git+https://git.methanium.net/methanium/mtp#44ff1d8781b4645dbff3dce2406155e4d9d43a4c"
 dependencies = [
  "serde",
  "serde_yaml",
