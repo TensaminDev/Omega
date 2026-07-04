@@ -1,6 +1,6 @@
 use crate::load_keyring;
 use crate::sql::sql;
-use crate::sql::sql::{get_by_user_id, get_omikron_by_id};
+use crate::sql::sql::{get_by_user_id, get_iota_by_id, get_omikron_by_id};
 use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
 use crate::transport::omikron_manager::get_random_omikron;
 use crate::util::file_util::get_directory;
@@ -64,12 +64,13 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
         ["api", "get", "omikron"] => {
             if let Ok(omikron_conn) = get_random_omikron().await {
                 if let Some(id) = omikron_conn.get_omikron_id().await {
-                    if let Ok((public_key, ip_address)) = sql::get_omikron_by_id(id).await {
+                    if let Ok((public_key, ip_address, port)) = sql::get_omikron_by_id(id).await {
                         let mut res = JsonValue::new_object();
                         res["status"] = "success".into();
                         res["id"] = id.into();
                         res["public_key"] = public_key.to_base64().into();
                         res["ip_address"] = ip_address.into();
+                        res["port"] = port.into();
 
                         (StatusCode::OK, res.dump())
                     } else {
@@ -99,20 +100,22 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 let mut res = JsonValue::new_object();
                 res["status"] = "error_bad_request".into();
                 (StatusCode::BAD_REQUEST, res.dump())
-            } else if let Ok((public_key, ip_address)) = get_omikron_by_id(id).await {
+            } else if let Ok((public_key, ip_address, port)) = get_omikron_by_id(id).await {
                 let mut res = JsonValue::new_object();
                 res["status"] = "success".into();
                 res["id"] = id.into();
                 res["public_key"] = public_key.to_base64().into();
                 res["ip_address"] = ip_address.into();
+                res["port"] = port.into();
                 (StatusCode::OK, res.dump())
             } else if let Some(omikron_id) = get_iota_primary_omikron_connection(id) {
-                if let Ok((public_key, ip_address)) = get_omikron_by_id(omikron_id).await {
+                if let Ok((public_key, ip_address, port)) = get_omikron_by_id(omikron_id).await {
                     let mut res = JsonValue::new_object();
                     res["status"] = "success".into();
                     res["id"] = omikron_id.into();
                     res["public_key"] = public_key.to_base64().into();
                     res["ip_address"] = ip_address.into();
+                    res["port"] = port.into();
                     (StatusCode::OK, res.dump())
                 } else {
                     let mut res = JsonValue::new_object();
@@ -122,12 +125,14 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
             } else if let Ok((_, iota_id, _, _, _, _, _, _, _, _, _, _)) = get_by_user_id(id).await
             {
                 if let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) {
-                    if let Ok((public_key, ip_address)) = get_omikron_by_id(omikron_id).await {
+                    if let Ok((public_key, ip_address, port)) = get_omikron_by_id(omikron_id).await
+                    {
                         let mut res = JsonValue::new_object();
                         res["status"] = "success".into();
                         res["id"] = omikron_id.into();
                         res["public_key"] = public_key.to_base64().into();
                         res["ip_address"] = ip_address.into();
+                        res["port"] = port.into();
                         (StatusCode::OK, res.dump())
                     } else {
                         let mut res = JsonValue::new_object();
@@ -139,6 +144,29 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                     res["status"] = "error_not_found".into();
                     (StatusCode::NOT_FOUND, res.dump())
                 }
+            } else {
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_not_found".into();
+                (StatusCode::NOT_FOUND, res.dump())
+            }
+        }
+
+        // ==================================================
+        // GET IOTA BY ID
+        // ==================================================
+        ["api", "get", "iota", id] => {
+            let id: i64 = id.parse().unwrap_or(0);
+
+            if id == 0 {
+                let mut res = JsonValue::new_object();
+                res["status"] = "error_bad_request".into();
+                (StatusCode::BAD_REQUEST, res.dump())
+            } else if let Ok((id, public_key)) = get_iota_by_id(id).await {
+                let mut res = JsonValue::new_object();
+                res["status"] = "success".into();
+                res["iota_id"] = id.into();
+                res["public_key"] = public_key.to_base64().into();
+                (StatusCode::OK, res.dump())
             } else {
                 let mut res = JsonValue::new_object();
                 res["status"] = "error_not_found".into();

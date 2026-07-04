@@ -1051,7 +1051,7 @@ pub async fn get_by_omikron_id(
     sql::get_omikron_by_id(omikron_id as i64)
         .await
         .ok()
-        .map(|(bundle, _ip_address)| bundle)
+        .map(|(bundle, _ip_address, _port)| bundle)
 }
 pub async fn complete_register(_pub_key: PublicKeyBundle, _description: Option<String>) -> u64 {
     0
@@ -1094,11 +1094,23 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let mut host: Host = Host::new(host_config).await?;
     log!("OmikronServer listening on port {}", port);
 
-    while let Ok(Some(mut connection)) = host.accept().await {
+    loop {
+        let mut conn = match host.accept().await {
+            Ok(Some(conn)) => conn,
+            Ok(None) => break,
+            Err(e) => {
+                // A single omikron's failed/aborted handshake (bad auth, a
+                // probe, a mid-handshake disconnect) must not take down the
+                // whole listener - only that connection attempt is lost.
+                log_err!(0, PrintType::Omega, "Rejected omikron connection: {}", e);
+                continue;
+            }
+        };
+
+        let omikron_connection = OmikronConnection::new(conn.sender, conn.client_id);
         tokio::spawn(async move {
-            let conn = OmikronConnection::new(connection.sender, connection.client_id);
-            omikron_manager::add_omikron(conn.clone()).await;
-            conn.handle(&mut connection.receiver).await;
+            omikron_manager::add_omikron(omikron_connection.clone()).await;
+            omikron_connection.handle(&mut conn.receiver).await;
         });
     }
 

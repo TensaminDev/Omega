@@ -85,8 +85,16 @@ pub async fn initialize_db() -> Result<(), sqlx::Error> {
         id BIGINT NOT NULL PRIMARY KEY,
         public_key BLOB NOT NULL,
         location VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
-        ip_address VARCHAR(255) NOT NULL COLLATE utf8mb4_bin
+        ip_address VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
+        port INT(11) NOT NULL DEFAULT 959
         )",
+    )
+    .execute(&pool)
+    .await;
+    // Retrofits `port` onto omikrons tables created before this column existed;
+    // `CREATE TABLE IF NOT EXISTS` above is a no-op against an already-existing table.
+    let _ = sqlx::query(
+        "ALTER TABLE omikrons ADD COLUMN IF NOT EXISTS port INT(11) NOT NULL DEFAULT 959",
     )
     .execute(&pool)
     .await;
@@ -684,7 +692,7 @@ pub async fn delete_iota(id: i64) -> Result<(), sqlx::Error> {
 //                                         OMIKRONS
 // ==========================================================================================
 
-pub async fn get_omikron_by_id(id: i64) -> Result<(PublicKeyBundle, String), sqlx::Error> {
+pub async fn get_omikron_by_id(id: i64) -> Result<(PublicKeyBundle, String, u16), sqlx::Error> {
     let pool = {
         let db_lock = SQL_DB.read().await;
         db_lock
@@ -693,18 +701,22 @@ pub async fn get_omikron_by_id(id: i64) -> Result<(PublicKeyBundle, String), sql
             .expect("Database pool not initialized")
     };
 
-    let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
-        "SELECT public_key, ip_address FROM omikrons WHERE id = ?",
+    let row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, i32)>(
+        "SELECT public_key, ip_address, port FROM omikrons WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(&pool)
     .await?;
 
     match row {
-        Some((public_key, ip_address)) => {
+        Some((public_key, ip_address, port)) => {
             let bundle = PublicKeyBundle::from_bytes(&public_key)
                 .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-            Ok((bundle, String::from_utf8_lossy(&ip_address).to_string()))
+            Ok((
+                bundle,
+                String::from_utf8_lossy(&ip_address).to_string(),
+                port as u16,
+            ))
         }
         _ => Err(sqlx::Error::RowNotFound),
     }
