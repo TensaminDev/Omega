@@ -304,6 +304,7 @@ impl OmikronConnection {
 
         let response = CommunicationValue::new(CommunicationType::IotaUserData)
             .with_id(cv.get_id())
+            .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
             .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
 
         let _ = self.send(&response).await;

@@ -67,6 +67,46 @@ pub fn get_iota_omikron_connections(iota_id: i64) -> Option<Vec<i64>> {
     IOTA_OMIKRON_CONNECTIONS.get(&iota_id).map(|v| v.clone())
 }
 
+pub async fn get_all_connections()
+-> Result<std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>>, ()> {
+    let mut result: std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>> =
+        std::collections::HashMap::new();
+
+    for entry in IOTA_OMIKRON_CONNECTIONS.iter() {
+        let iota_id = *entry.key();
+        for omikron_id in entry.value().iter() {
+            result
+                .entry(*omikron_id)
+                .or_insert_with(std::collections::HashMap::new)
+                .entry(iota_id)
+                .or_insert_with(Vec::new);
+        }
+    }
+
+    for entry in IOTA_OMIKRON_CONNECTIONS.iter() {
+        let iota_id = *entry.key();
+        let omikron_ids = entry.value().clone();
+
+        if let Ok(users) = sql::sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
+            for user in users {
+                let user_id = user.0 as i64;
+                if let Some(conn) = USER_STATUS_MAP.get(&user_id) {
+                    let user_omikron_id = conn.omikron_id;
+                    if omikron_ids.contains(&user_omikron_id) {
+                        if let Some(iota_map) = result.get_mut(&user_omikron_id) {
+                            if let Some(user_vec) = iota_map.get_mut(&iota_id) {
+                                user_vec.push(user_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
 pub fn track_user_status(user_id: i64, status: UserStatus, omikron_id: i64) {
     USER_STATUS_MAP.insert(
         user_id,

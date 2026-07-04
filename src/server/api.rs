@@ -1,7 +1,7 @@
 use crate::load_keyring;
 use crate::sql::sql;
 use crate::sql::sql::{get_by_user_id, get_iota_by_id, get_omikron_by_id};
-use crate::sql::user_online_tracker::get_iota_primary_omikron_connection;
+use crate::sql::user_online_tracker::{get_all_connections, get_iota_primary_omikron_connection};
 use crate::transport::omikron_manager::get_random_omikron;
 use crate::util::file_util::get_directory;
 use actix_web::HttpResponse;
@@ -148,6 +148,31 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
                 let mut res = JsonValue::new_object();
                 res["status"] = "error_not_found".into();
                 (StatusCode::NOT_FOUND, res.dump())
+            }
+        }
+
+        ["api", "get", "connections"] => {
+            if let Ok(connections) = get_all_connections().await {
+                let mut res = JsonValue::new_object();
+                res["status"] = "success".into();
+
+                for (omikron_id, iota_map) in connections {
+                    let mut omikron_obj = JsonValue::new_object();
+                    for (iota_id, user_ids) in iota_map {
+                        let mut user_arr = JsonValue::new_array();
+                        for user_id in user_ids {
+                            let _ = user_arr.push(user_id);
+                        }
+                        omikron_obj[&iota_id.to_string()] = user_arr;
+                    }
+                    res[&omikron_id.to_string()] = omikron_obj;
+                }
+
+                (StatusCode::OK, res.dump())
+            } else {
+                let mut res = JsonValue::new_object();
+                res["status"] = "error".into();
+                (StatusCode::INTERNAL_SERVER_ERROR, res.dump())
             }
         }
 
