@@ -99,6 +99,11 @@ type_maps:
       AppChallengeResponse: 133
       AppIdentificationResponse: 134
       LoadTxtRecord: 135
+      ErrorNotSet: 136
+      SetChatSecret: 139
+      GetChatSecret: 140
+      ChatSecretResponse: 141
+      ChatSecretForward: 142
     DataTypes:
       ErrorType: 32
       ErrorProtocol: 33
@@ -198,3 +203,19 @@ type_maps:
       AppSession: 130
       AppData: 131
       TauriToken: 132
+      Challenge: 133
+      EncryptedPayload: 134
+      SecurePayload: 135
+      DeviceId: 136
+      ClientId: 137
+      SecretId: 142
+      VersionNumber: 143
+      EncryptedSecret: 144
+      WrappingScheme: 146
+      UpdatedAt: 147
+      ChatId: 148
+      KemCiphertext: 149
+      SenderUserId: 152
+      RecipientUserId: 153
+      Recipients: 154
+      ReplyId: 155
