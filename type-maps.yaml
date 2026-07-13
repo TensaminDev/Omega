@@ -148,6 +148,7 @@ type_maps:
       MessageReactionAdd: 146
       MessageReactionRemove: 147
       MessageReactionLive: 148
+      MessageDeleteLive: 150
     DataTypes:
       ErrorType: 32
       ErrorProtocol: 33
