@@ -110,24 +110,14 @@
                 description = "Directory where Omega stores its data and reads certificates from.";
               };
 
-              apiCertFile = lib.mkOption {
+              certFile = lib.mkOption {
                 type = lib.types.path;
-                description = "Path to the SSL certificate file for the web/API server (e.g. ACME fullchain.pem). Copied to server_cert.pem at runtime.";
+                description = "Path to the SSL certificate file (e.g. ACME fullchain.pem). Copied to cert.pem at runtime.";
               };
 
-              apiKeyFile = lib.mkOption {
+              keyFile = lib.mkOption {
                 type = lib.types.path;
-                description = "Path to the SSL private key file for the web/API server (e.g. ACME key.pem). Converted to PKCS#8 and copied to server_key.pem at runtime.";
-              };
-
-              transportCertFile = lib.mkOption {
-                type = lib.types.path;
-                description = "Path to the SSL certificate file for the MTP/QUIC transport (e.g. ACME fullchain.pem). Copied to transport_cert.pem at runtime.";
-              };
-
-              transportKeyFile = lib.mkOption {
-                type = lib.types.path;
-                description = "Path to the SSL private key file for the MTP/QUIC transport (e.g. ACME key.pem). Converted to PKCS#8 and copied to transport_key.pem at runtime.";
+                description = "Path to the SSL private key file (e.g. ACME key.pem). Converted to PKCS#8 and copied to key.pem at runtime.";
               };
 
               environmentFiles = lib.mkOption {
@@ -211,14 +201,10 @@
                       "+"
                       + pkgs.writeShellScript "omega-setup-certs" ''
                         mkdir -p ${cfg.dataDir}/certs
-                        cp ${cfg.apiCertFile} ${cfg.dataDir}/certs/server_cert.pem
+                        cp ${cfg.certFile} ${cfg.dataDir}/certs/cert.pem
                         ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
-                          -in ${cfg.apiKeyFile} \
-                          -out ${cfg.dataDir}/certs/server_key.pem
-                        cp ${cfg.transportCertFile} ${cfg.dataDir}/certs/transport_cert.pem
-                        ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
-                          -in ${cfg.transportKeyFile} \
-                          -out ${cfg.dataDir}/certs/transport_key.pem
+                          -in ${cfg.keyFile} \
+                          -out ${cfg.dataDir}/certs/key.pem
                         chown -R omega:omega ${cfg.dataDir}
                       ''
                     )

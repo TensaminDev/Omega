@@ -257,8 +257,8 @@ pub async fn complete_register(_: PublicKeyBundle, _: Option<String>) -> u64 {
 }
 
 pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    let cert_pem = load_file_vec("certs", "transport_cert.pem")?;
-    let key_pem = load_file_vec("certs", "transport_key.pem")?;
+    let cert_pem = load_file_vec("certs", "cert.pem")?;
+    let key_pem = load_file_vec("certs", "key.pem")?;
     let web_config = server::server::build_web_config()?;
     let host_config = HostConfig::new(
         IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)),
