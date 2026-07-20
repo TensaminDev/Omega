@@ -8,13 +8,16 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    ttp = {
-      url = "git+https://git.methanium.net/tensamin/ttp.git";
-      flake = false;
-    };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, rust-overlay, ttp, ... }:
+  outputs =
+    inputs@{
+      self,
+      nixpkgs,
+      flake-parts,
+      rust-overlay,
+      ...
+    }:
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "x86_64-linux"
@@ -23,14 +26,25 @@
         "aarch64-darwin"
       ];
 
-      perSystem = { self', pkgs, system, ... }:
+      perSystem =
+        {
+          self',
+          pkgs,
+          system,
+          ...
+        }:
         let
           rustPkgs = import nixpkgs {
             inherit system;
             overlays = [ (import rust-overlay) ];
           };
           rustToolchain = rustPkgs.rust-bin.stable.latest.default.override {
-            extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
+            extensions = [
+              "rust-src"
+              "rust-analyzer"
+              "clippy"
+              "rustfmt"
+            ];
           };
         in
         {
@@ -44,28 +58,47 @@
                 lockFile = ./Cargo.lock;
                 allowBuiltinFetchGit = true;
               };
-              nativeBuildInputs = with pkgs; [ cmake perl pkg-config ];
-              buildInputs = with pkgs; [ openssl libmysqlclient ];
+              nativeBuildInputs = with pkgs; [
+                cmake
+                perl
+                pkg-config
+              ];
+              buildInputs = with pkgs; [
+                openssl
+                libmysqlclient
+              ];
               dontUseCmakeConfigure = true;
-              preConfigure = ''
-                if [ -d ../cargo-vendor-dir/ttp-core-0.1.0 ]; then
-                  cp ${ttp}/ttp-codec.json ../cargo-vendor-dir/ttp-codec.json
-                fi
-              '';
             };
           };
 
           devShells.default = pkgs.mkShell {
-            nativeBuildInputs = with pkgs; [ rustToolchain git cmake perl pkg-config ];
-            buildInputs = with pkgs; [ openssl libmysqlclient ];
+            nativeBuildInputs = with pkgs; [
+              rustToolchain
+              git
+              cmake
+              perl
+              pkg-config
+            ];
+            buildInputs = with pkgs; [
+              openssl
+              libmysqlclient
+            ];
           };
         };
 
       flake = {
-        nixosModules.default = { config, pkgs, lib, ... }:
+        nixosModules.default =
+          {
+            config,
+            pkgs,
+            lib,
+            ...
+          }:
           let
             cfg = config.services.omega;
-            defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.default or (throw "omega: no pre-built package for system ${pkgs.stdenv.hostPlatform.system}");
+            defaultPackage =
+              self.packages.${pkgs.stdenv.hostPlatform.system}.default
+                or (throw "omega: no pre-built package for system ${pkgs.stdenv.hostPlatform.system}");
           in
           {
             options.services.omega = {
@@ -89,12 +122,12 @@
 
               transportCertFile = lib.mkOption {
                 type = lib.types.path;
-                description = "Path to the SSL certificate file for the TTP/QUIC transport (e.g. ACME fullchain.pem). Copied to transport_cert.pem at runtime.";
+                description = "Path to the SSL certificate file for the MTP/QUIC transport (e.g. ACME fullchain.pem). Copied to transport_cert.pem at runtime.";
               };
 
               transportKeyFile = lib.mkOption {
                 type = lib.types.path;
-                description = "Path to the SSL private key file for the TTP/QUIC transport (e.g. ACME key.pem). Converted to PKCS#8 and copied to transport_key.pem at runtime.";
+                description = "Path to the SSL private key file for the MTP/QUIC transport (e.g. ACME key.pem). Converted to PKCS#8 and copied to transport_key.pem at runtime.";
               };
 
               environmentFiles = lib.mkOption {
@@ -115,13 +148,7 @@
               transportPort = lib.mkOption {
                 type = lib.types.port;
                 default = 9187;
-                description = "Port for the TTP/QUIC transport server.";
-              };
-
-              ttpBind = lib.mkOption {
-                type = lib.types.str;
-                default = "0.0.0.0";
-                description = "IP address to bind the TTP/QUIC transport server to.";
+                description = "Port for the MTP/QUIC transport server.";
               };
 
               bindAddress = lib.mkOption {
@@ -171,7 +198,6 @@
                   Environment = [
                     "API_PORT=${toString cfg.apiPort}"
                     "OMIKRON_PORT=${toString cfg.transportPort}"
-                    "TTP_BIND=${cfg.ttpBind}"
                     "BIND_ADDRESS=${cfg.bindAddress}"
                   ];
 
@@ -181,18 +207,21 @@
                   CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
 
                   ExecStartPre = [
-                    ("+" + pkgs.writeShellScript "omega-setup-certs" ''
-                      mkdir -p ${cfg.dataDir}/certs
-                      cp ${cfg.apiCertFile} ${cfg.dataDir}/certs/server_cert.pem
-                      ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
-                        -in ${cfg.apiKeyFile} \
-                        -out ${cfg.dataDir}/certs/server_key.pem
-                      cp ${cfg.transportCertFile} ${cfg.dataDir}/certs/transport_cert.pem
-                      ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
-                        -in ${cfg.transportKeyFile} \
-                        -out ${cfg.dataDir}/certs/transport_key.pem
-                      chown -R omega:omega ${cfg.dataDir}
-                    '')
+                    (
+                      "+"
+                      + pkgs.writeShellScript "omega-setup-certs" ''
+                        mkdir -p ${cfg.dataDir}/certs
+                        cp ${cfg.apiCertFile} ${cfg.dataDir}/certs/server_cert.pem
+                        ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
+                          -in ${cfg.apiKeyFile} \
+                          -out ${cfg.dataDir}/certs/server_key.pem
+                        cp ${cfg.transportCertFile} ${cfg.dataDir}/certs/transport_cert.pem
+                        ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
+                          -in ${cfg.transportKeyFile} \
+                          -out ${cfg.dataDir}/certs/transport_key.pem
+                        chown -R omega:omega ${cfg.dataDir}
+                      ''
+                    )
                   ];
 
                   ProtectSystem = "strict";
@@ -211,8 +240,14 @@
               };
 
               networking.firewall = lib.mkIf cfg.openFirewall {
-                allowedTCPPorts = [ cfg.transportPort cfg.apiPort ];
-                allowedUDPPorts = [ cfg.transportPort cfg.apiPort ];
+                allowedTCPPorts = [
+                  cfg.transportPort
+                  cfg.apiPort
+                ];
+                allowedUDPPorts = [
+                  cfg.transportPort
+                  cfg.apiPort
+                ];
               };
             };
           };
