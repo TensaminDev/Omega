@@ -1,69 +1,19 @@
-use crate::{
-    log,
-    server::{api, index::index_handler, short_link::get_short_link},
-    util::file_util::load_file_buf,
-};
+use crate::server::{api, index::index_handler};
+use mtp::webserver::WebServerConfig;
 
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, http::header, web};
-
-use rustls::ServerConfig;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_pemfile::{certs, pkcs8_private_keys};
-
-pub async fn start(port: u16) -> anyhow::Result<()> {
-    let mut cert_reader = load_file_buf("certs", "server_cert.pem")?;
-
-    let mut key_reader = load_file_buf("certs", "server_key.pem")?;
-
-    let cert_chain: Vec<CertificateDer<'static>> =
-        certs(&mut cert_reader).collect::<Result<_, _>>()?;
-
-    let mut keys: Vec<PrivateKeyDer<'static>> = pkcs8_private_keys(&mut key_reader)
-        .map(|res| res.map(Into::into))
-        .collect::<Result<_, _>>()?;
-
-    let key = keys.remove(0);
-
-    let mut config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key)?;
-
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
-    let bind_addr = std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let addr = format!("{}:{}", bind_addr, port);
-    log!("  Server on {}", addr);
-
-    HttpServer::new(move || {
-        App::new()
-            .route("/api/{path:.*}", web::to(api_handler))
-            .route("/direct/{path:.*}", web::to(direct_handler))
-            .default_service(web::to(index_handler))
-    })
-    .bind_rustls_0_23(addr, config)?
-    .run()
-    .await?;
-
-    Ok(())
-}
-async fn direct_handler(req: HttpRequest) -> impl Responder {
-    let path = req.uri().path().to_string();
-    let short = path.replace("/direct/", "");
-
-    if let Ok(long) = get_short_link(&short).await {
-        HttpResponse::TemporaryRedirect()
-            .append_header((header::LOCATION, long))
-            .finish()
-    } else {
-        HttpResponse::TemporaryRedirect()
-            .append_header((header::LOCATION, "https://tensamin.net"))
-            .finish()
-    }
-}
-
-async fn api_handler(req: HttpRequest, body: web::Bytes) -> HttpResponse {
-    let path = req.uri().path().to_string();
-    let body_string = String::from_utf8_lossy(&body).to_string();
-
-    api::handle(&path, Some(body_string)).await
+pub fn build_web_config() -> Result<WebServerConfig, mtp::webserver::RouterError> {
+    WebServerConfig::new()
+        .route(
+            "/",
+            |_request, response| async move { index_handler(response) },
+        )?
+        .route("/api/download/iota_frontend", api::handle)?
+        .route("/api/get/omikron", api::handle)?
+        .route("/api/get/connections", api::handle)?
+        .route("/api/get/public_key", api::handle)?
+        .route_pattern("/api/get/omikron/{id}", api::handle_pattern)?
+        .route_pattern("/api/get/iota/{id}", api::handle_pattern)?
+        .route_pattern("/api/get/id/{username}", api::handle_pattern)?
+        .route_pattern("/api/get/user/{id}", api::handle_pattern)?
+        .route_pattern("/direct/{short}", api::handle_pattern)
 }

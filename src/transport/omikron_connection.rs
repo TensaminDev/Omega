@@ -1,6 +1,6 @@
 use crate::{
     load_keyring, log, log_cv_in, log_cv_out, log_err, log_in,
-    server::short_link::add_short_link,
+    server::{self, short_link::add_short_link},
     sql::{
         connection_status::UserStatus,
         sql::{self, get_by_user_id, get_by_username, get_iota_by_id},
@@ -11,12 +11,10 @@ use crate::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
-use mtp::host::{AuthenticationPolicy, Receiver, Sender};
-use mtp::{
-    codec::{CommunicationType, CommunicationValue, DataType, DataValue},
-    host::{Host, HostConfig, Policy, SendMode},
-};
-use mtp_crypto::PublicKeyBundle;
+use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+use mtp::host::{AuthenticationPolicy, HostConfig, Policy, SendMode};
+use mtp::webserver::{MTPWebServer, WebMtpReceiver, WebMtpSender};
+use mtp::crypto::PublicKeyBundle;
 use std::net::{IpAddr, Ipv4Addr};
 use std::{
     sync::Arc,
@@ -26,16 +24,9 @@ use tokio::{
     sync::{Mutex, RwLock},
     time::interval,
 };
-// ============================================================================
-// Configuration
-// ============================================================================
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_WAITING_AGE: Duration = Duration::from_secs(60);
-
-// ============================================================================
-// Error Types
-// ============================================================================
 
 #[derive(Debug, thiserror::Error)]
 pub enum OmikronError {
@@ -55,22 +46,14 @@ pub enum OmikronError {
 
 pub type OmikronResult<T> = Result<T, OmikronError>;
 
-// ============================================================================
-// Waiting Task System (Preserved from original)
-// ============================================================================
-
 pub struct WaitingTask {
     pub task: Box<dyn Fn(Arc<OmikronConnection>, CommunicationValue) -> bool + Send + Sync>,
     pub inserted_at: Instant,
 }
 
-// ============================================================================
-// Omikron Connection (mtp/QUIC-based)
-// ============================================================================
-
 pub struct OmikronConnection {
     id: u64,
-    sender: Mutex<Option<Sender>>,
+    sender: Mutex<Option<WebMtpSender>>,
     pub ping: RwLock<i64>,
     waiting_tasks: DashMap<u32, WaitingTask>,
     cleanup_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -85,11 +68,7 @@ impl Drop for OmikronConnection {
 }
 
 impl OmikronConnection {
-    // -------------------------------------------------------------------------
-    // Construction
-    // -------------------------------------------------------------------------
-
-    pub fn new(sender: Sender, id: u64) -> Arc<Self> {
+    pub fn new(sender: WebMtpSender, id: u64) -> Arc<Self> {
         let conn = Arc::new(Self {
             id,
             sender: Mutex::new(Some(sender)),
@@ -101,18 +80,13 @@ impl OmikronConnection {
         conn
     }
 
-    // -------------------------------------------------------------------------
-    // Main Handler Loop
-    // -------------------------------------------------------------------------
-
-    pub async fn handle(self: Arc<Self>, receiver: &mut Receiver) {
+    pub async fn handle(self: Arc<Self>, receiver: &mut WebMtpReceiver) {
         log_in!(
             self.id as i64,
             PrintType::Omega,
             "Omikron connection started"
         );
 
-        // Start cleanup task
         let cleanup_conn = self.clone();
         let cleanup_handle = tokio::spawn(async move {
             let mut ticker = interval(CLEANUP_INTERVAL);
@@ -142,10 +116,6 @@ impl OmikronConnection {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Message Processing
-    // -------------------------------------------------------------------------
-
     async fn process_message(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         if !cv.is_type(CommunicationType::Pong) && !cv.is_type(CommunicationType::Ping) {
             log_cv_in!(PrintType::Omikron, &cv);
@@ -153,18 +123,15 @@ impl OmikronConnection {
 
         let msg_id = cv.get_id();
 
-        // Check waiting tasks first (response to previous request)
         if let Some((_, task)) = self.waiting_tasks.remove(&msg_id) {
             let _ = (task.task)(self.clone(), cv);
             return Ok(());
         }
 
-        // Handle ping regardless of message type
         if cv.is_type(CommunicationType::Ping) {
             return self.handle_ping(cv).await;
         }
 
-        // Authentication is completed by the mtp host before this connection exists.
         let omikron_id = self.id as i64;
         self.clone().handle_authenticated(cv, omikron_id).await
     }
@@ -176,10 +143,8 @@ impl OmikronConnection {
     ) -> OmikronResult<()> {
         let comm_type = cv.get_comm_type_enum();
         match comm_type {
-            // Link shortening
             Some(CommunicationType::ShortenLink) => self.handle_shorten_link(cv).await,
 
-            // Online status tracking
             Some(CommunicationType::UserConnected) => {
                 self.handle_user_connected(cv, omikron_id).await;
                 Ok(())
@@ -233,10 +198,6 @@ impl OmikronConnection {
             }
         }
     }
-
-    // -------------------------------------------------------------------------
-    // Specific Handlers (ported from original WebSocket implementation)
-    // -------------------------------------------------------------------------
 
     async fn handle_shorten_link(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
         let link = cv
@@ -348,7 +309,6 @@ impl OmikronConnection {
     }
 
     async fn handle_get_user_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        // Try by user_id first
         if let Some(user_id) = cv.get_data(DataType::UserId).as_number() {
             if let Ok(user_data) = get_by_user_id(user_id as i64).await {
                 let response = self
@@ -359,7 +319,6 @@ impl OmikronConnection {
             }
         }
 
-        // Try by username
         if let Some(username) = cv.get_data(DataType::Username).as_str() {
             if let Ok(user_data) = get_by_username(username).await {
                 let response = self
@@ -370,7 +329,6 @@ impl OmikronConnection {
             }
         }
 
-        // Not found
         let response =
             CommunicationValue::new(CommunicationType::ErrorNotFound).with_id(cv.get_id());
         self.send(&response).await
@@ -421,11 +379,9 @@ impl OmikronConnection {
             )
             .add_typed_default(DataType::SubEnd, DataValue::SignedNumber(sub_end.into()));
 
-        // Display name (fallback to username)
         let display_name = display.filter(|d| !d.is_empty()).unwrap_or(username);
         response = response.add_typed_default(DataType::Display, DataValue::Str(display_name));
 
-        // Optional fields
         if let Some(s) = status.filter(|s| !s.is_empty()) {
             response = response.add_typed_default(DataType::Status, DataValue::Str(s));
         }
@@ -437,7 +393,6 @@ impl OmikronConnection {
                 response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(av)));
         }
 
-        // Online status
         let user_status = user_online_tracker::get_user_status(id);
         let iota_connections =
             user_online_tracker::get_iota_omikron_connections(iota_id).unwrap_or_default();
@@ -477,7 +432,6 @@ impl OmikronConnection {
     }
 
     async fn handle_get_iota_data(self: Arc<Self>, cv: CommunicationValue) -> OmikronResult<()> {
-        // Try by iota_id
         if let Some(iota_id) = cv.get_data(DataType::IotaId).as_number() {
             if let Ok((iota_id, public_key)) = get_iota_by_id(iota_id as i64).await {
                 let response = self
@@ -488,7 +442,6 @@ impl OmikronConnection {
             }
         }
 
-        // Try by user_id
         if let Some(user_id) = cv.get_data(DataType::UserId).as_number() {
             if let Ok((_, iota_id, _, _, _, _, _, _, _, _, _, _)) =
                 get_by_user_id(user_id as i64).await
@@ -509,7 +462,6 @@ impl OmikronConnection {
             }
         }
 
-        // Try by username
         if let Some(username) = cv.get_data(DataType::Username).as_str() {
             if let Ok((user_id, iota_id, _, _, _, _, _, _, _, _, _, _)) =
                 get_by_username(username).await
@@ -594,7 +546,6 @@ impl OmikronConnection {
 
         if let Some(public_key) = public_key {
             if let Some(iota_id) = iota_id_opt {
-                // Register existing IOTA
                 match sql::register_complete_iota(iota_id, public_key).await {
                     Ok(_) => {
                         let response = CommunicationValue::new(CommunicationType::Success)
@@ -609,7 +560,6 @@ impl OmikronConnection {
                     }
                 }
             } else {
-                // Create new IOTA
                 match sql::create_new_iota(public_key).await {
                     Ok(new_iota_id) => {
                         let response =
@@ -681,7 +631,6 @@ impl OmikronConnection {
         let mut success = true;
         let mut error_message = String::new();
 
-        // Process each field
         if let Some(username) = cv.get_data(DataType::Username).as_str() {
             if let Err(e) = sql::change_username(user_id, username.to_string()).await {
                 success = false;
@@ -747,7 +696,7 @@ impl OmikronConnection {
         ) {
             match sql::get_by_user_id(user_id).await {
                 Ok(user) => {
-                    let current_token = user.11; // reset_token field
+                    let current_token = user.11;
                     if current_token == reset_token {
                         let mut success = true;
                         let mut error_message = String::new();
@@ -889,7 +838,6 @@ impl OmikronConnection {
                     .with_id(cv.get_id());
                 let _ = self.send(&response).await;
 
-                // Sync with other Omikron clients
                 let sync_cv = CommunicationValue::new(CommunicationType::ReadNotification)
                     .with_receiver(receiver_id as u64)
                     .add_typed_default(
@@ -926,7 +874,6 @@ impl OmikronConnection {
                 CommunicationValue::new(CommunicationType::PushNotification).with_id(cv.get_id());
             let _ = self.send(&response).await;
 
-            // Sync with other Omikron clients
             let push_cv = CommunicationValue::new(CommunicationType::PushNotification)
                 .with_receiver(receiver_id as u64)
                 .add_typed_default(
@@ -984,10 +931,6 @@ impl OmikronConnection {
         let response = CommunicationValue::new(CommunicationType::Pong).with_id(cv.get_id());
         self.send(&response).await
     }
-
-    // -------------------------------------------------------------------------
-    // Utilities
-    // -------------------------------------------------------------------------
 
     async fn send(self: Arc<Self>, cv: &CommunicationValue) -> OmikronResult<()> {
         if !cv.is_type(CommunicationType::Pong) && !cv.is_type(CommunicationType::Ping) {
@@ -1060,8 +1003,9 @@ pub async fn complete_register(_pub_key: PublicKeyBundle, _description: Option<S
 
 pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let cert_pem = load_file_vec("certs", "transport_cert.pem").expect("Error loading Pemfile");
-
     let key_pem = load_file_vec("certs", "transport_key.pem").expect("Error loading Keyfile");
+
+    let web_config = server::server::build_web_config()?;
 
     let host_config = HostConfig::new(
         IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)),
@@ -1072,6 +1016,7 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     .with_policy(Policy {
         send_mode: SendMode::SingleStreamPerMessage,
         max_message_size: 1_000_000_000,
+        handshake_max_message_size: 1_000_000,
         close_frame_len: u32::MAX,
         application_close_code: 0,
         open_stream_timeout: Duration::from_millis(2_000),
@@ -1081,9 +1026,11 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         keep_alive_interval: Some(Duration::from_secs(6)),
         max_idle_timeout: Some(Duration::from_secs(30)),
         force_close_delay: Duration::from_millis(300),
-        max_transient_recv_errors: 20,
-        transient_recv_backoff: Duration::from_millis(100),
         receiver_queue_capacity: 1000,
+        max_concurrent_stream_tasks: 10,
+        persistent_stream_max_retries: 5,
+        persistent_stream_retry_backoff: Duration::from_secs(5),
+        max_frames_per_stream: None,
     })
     .with_authentication(
         load_keyring(),
@@ -1092,17 +1039,14 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_authentication_policy(AuthenticationPolicy::ForceAuthentication);
 
-    let mut host: Host = Host::new(host_config).await?;
-    log!("OmikronServer listening on port {}", port);
+    let mut server = MTPWebServer::new(host_config, web_config).await?;
+    log!("OmegaServer listening on port {}", port);
 
     loop {
-        let mut conn = match host.accept().await {
+        let mut conn = match server.accept().await {
             Ok(Some(conn)) => conn,
             Ok(None) => break,
             Err(e) => {
-                // A single omikron's failed/aborted handshake (bad auth, a
-                // probe, a mid-handshake disconnect) must not take down the
-                // whole listener - only that connection attempt is lost.
                 log_err!(0, PrintType::Omega, "Rejected omikron connection: {}", e);
                 continue;
             }

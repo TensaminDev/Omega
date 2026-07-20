@@ -4,24 +4,31 @@ use crate::sql::sql::{get_by_user_id, get_iota_by_id, get_omikron_by_id};
 use crate::sql::user_online_tracker::{get_all_connections, get_iota_primary_omikron_connection};
 use crate::transport::omikron_manager::get_random_omikron;
 use crate::util::file_util::get_directory;
-use actix_web::HttpResponse;
-use actix_web::http::{StatusCode, header};
 use base64::Engine as _;
+use bytes::Bytes;
+use http::{Method, StatusCode};
 use json::JsonValue;
+use mtp::webserver::{Http3Request, Http3Response, RouteParams};
 
-pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
-    if path == "OPTIONS" {
-        return HttpResponse::Ok()
-            .insert_header(("Access-Control-Allow-Origin", "*"))
-            .insert_header(("Access-Control-Allow-Methods", "GET, POST, OPTIONS"))
-            .insert_header(("Access-Control-Allow-Headers", "*"))
-            .finish();
+pub async fn handle(request: Http3Request, response: Http3Response) -> Http3Response {
+    let method = request.method;
+    let path = request.uri.path().to_string();
+    let body_string = request
+        .body
+        .map(|body| String::from_utf8_lossy(&body).to_string());
+
+    if method == Method::OPTIONS {
+        return response
+            .status(StatusCode::OK)
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-methods", "GET, POST, OPTIONS")
+            .header("access-control-allow-headers", "*");
     }
 
-    let path_parts: Vec<&str> = path.split("/").filter(|s| !s.is_empty()).collect();
+    let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
-    let _body: Option<JsonValue> = if body_string.is_some() {
-        if let Ok(body_json) = json::parse(&body_string.unwrap()) {
+    let _body: Option<JsonValue> = if let Some(ref bs) = body_string {
+        if let Ok(body_json) = json::parse(bs) {
             Some(body_json)
         } else {
             None
@@ -39,20 +46,22 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
 
             match std::fs::read(file_path) {
                 Ok(file_bytes) => {
-                    return HttpResponse::Ok()
-                        .insert_header(("Access-Control-Allow-Origin", "*"))
-                        .insert_header(("Content-Type", "application/zip"))
-                        .insert_header((
-                            "Content-Disposition",
+                    return response
+                        .status(StatusCode::OK)
+                        .header("access-control-allow-origin", "*")
+                        .header("content-type", "application/zip")
+                        .header(
+                            "content-disposition",
                             "attachment; filename=\"iota_frontend.zip\"",
-                        ))
-                        .body(file_bytes);
+                        )
+                        .body(Bytes::from(file_bytes));
                 }
                 Err(_) => {
                     let mut res = JsonValue::new_object();
                     res["status"] = "error_not_found".into();
-                    return HttpResponse::NotFound()
-                        .insert_header(("Access-Control-Allow-Origin", "*"))
+                    return response
+                        .status(StatusCode::NOT_FOUND)
+                        .header("access-control-allow-origin", "*")
                         .body(res.dump());
                 }
             }
@@ -310,6 +319,23 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
         }
 
         // ==================================================
+        // DIRECT - SHORT LINK RESOLUTION
+        // ==================================================
+        ["direct", short @ ..] => {
+            let short_str = short.join("/");
+            let short = short_str.replace("/", "");
+            if let Ok(long) = crate::server::short_link::get_short_link(&short).await {
+                return response
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", &long);
+            } else {
+                return response
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", "https://tensamin.net");
+            }
+        }
+
+        // ==================================================
         // DEFAULT
         // ==================================================
         _ => {
@@ -318,11 +344,19 @@ pub async fn handle(path: &str, body_string: Option<String>) -> HttpResponse {
             (StatusCode::INTERNAL_SERVER_ERROR, res.dump())
         }
     };
-    let body_bytes = body_text.into_bytes();
 
-    HttpResponse::build(status)
-        .insert_header((header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"))
-        .insert_header((header::ACCESS_CONTROL_ALLOW_HEADERS, "*"))
-        .insert_header((header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS"))
-        .body(body_bytes)
+    response
+        .status(status)
+        .header("access-control-allow-origin", "*")
+        .header("access-control-allow-headers", "*")
+        .header("access-control-allow-methods", "GET, POST, OPTIONS")
+        .body(body_text)
+}
+
+pub async fn handle_pattern(
+    request: Http3Request,
+    response: Http3Response,
+    _params: RouteParams,
+) -> Http3Response {
+    handle(request, response).await
 }

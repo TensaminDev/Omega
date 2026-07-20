@@ -1,6 +1,7 @@
-use actix_web::{HttpResponse, Responder};
+use http::StatusCode;
+use mtp::webserver::Http3Response;
 
-pub async fn index_handler() -> impl Responder {
+pub fn index_handler(response: Http3Response) -> Http3Response {
     let documentation = r#"
 Omega API Server
 
@@ -11,7 +12,8 @@ Available Routes:
 All other routes will return this documentation.
 "#;
 
-    HttpResponse::Ok()
-        .content_type("text/plain; charset=utf-8")
+    response
+        .status(StatusCode::OK)
+        .header("content-type", "text/plain; charset=utf-8")
         .body(documentation)
 }

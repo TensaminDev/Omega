@@ -1,5 +1,5 @@
 use crate::log;
-use mtp_crypto::PublicKeyBundle;
+use mtp::crypto::PublicKeyBundle;
 use once_cell::sync::Lazy;
 use sqlx::{MySql, Pool, Row, mysql::MySqlPoolOptions};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,7 +202,7 @@ pub async fn get_by_username(
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
             let public_key = PublicKeyBundle::from_bytes(&row.get::<Vec<u8>, _>("public_key"))
-            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
             let private_key_hash: Vec<u8> = row.get("private_key_hash");
             let token: Vec<u8> = row.get("token");
 
@@ -271,7 +271,7 @@ pub async fn get_by_user_id(
             let sub_level: i32 = row.get("sub_level");
             let sub_end: i64 = row.get("sub_end");
             let public_key = PublicKeyBundle::from_bytes(&row.get::<Vec<u8>, _>("public_key"))
-            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
             let private_key_hash: Vec<u8> = row.get("private_key_hash");
             let token: Vec<u8> = row.get("token");
 
@@ -607,7 +607,10 @@ pub async fn create_new_iota(public_key: PublicKeyBundle) -> Result<i64, sqlx::E
     Ok(new_id)
 }
 
-pub async fn register_complete_iota(id: i64, public_key: PublicKeyBundle) -> Result<(), sqlx::Error> {
+pub async fn register_complete_iota(
+    id: i64,
+    public_key: PublicKeyBundle,
+) -> Result<(), sqlx::Error> {
     let pool = {
         let db_lock = SQL_DB.read().await;
         db_lock
