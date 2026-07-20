@@ -1,4 +1,5 @@
-use crate::sql;
+use crate::db::user_repo;
+use crate::models::IotaId;
 use crate::sql::connection_status::UserStatus;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -33,27 +34,30 @@ pub fn track_iota_connection(iota_id: i64, omikron_id: i64, primary: bool) {
 }
 
 pub fn untrack_iota_connection(iota_id: i64, omikron_id: i64) -> bool {
-    let connections_empty = if let Some(r) = IOTA_OMIKRON_CONNECTIONS.get(&iota_id) {
-        let mut vec = r.value().clone();
-        vec.retain(|&id| id != omikron_id);
-        let empty = vec.is_empty();
-        drop(r);
-        IOTA_OMIKRON_CONNECTIONS.insert(iota_id, vec);
-        empty
-    } else {
-        false
-    };
-
-    if let Some(primary_ref) = IOTA_PRIMARY_OMIKRON_CONNECTION.get(&iota_id) {
-        let primary_id = *primary_ref.value();
-        drop(primary_ref);
-        if primary_id == omikron_id {
-            IOTA_PRIMARY_OMIKRON_CONNECTION.remove(&iota_id);
-        }
+    let mut replacement = None;
+    let mut connections_empty = false;
+    if let Some(mut entry) = IOTA_OMIKRON_CONNECTIONS.get_mut(&iota_id) {
+        entry.retain(|&id| id != omikron_id);
+        connections_empty = entry.is_empty();
+        replacement = entry.first().copied();
     }
 
     if connections_empty {
-        IOTA_OMIKRON_CONNECTIONS.remove(&iota_id);
+        IOTA_OMIKRON_CONNECTIONS.remove_if(&iota_id, |_, connections| connections.is_empty());
+    }
+
+    if IOTA_PRIMARY_OMIKRON_CONNECTION
+        .get(&iota_id)
+        .is_some_and(|primary| *primary == omikron_id)
+    {
+        match replacement {
+            Some(omikron_id) => {
+                IOTA_PRIMARY_OMIKRON_CONNECTION.insert(iota_id, omikron_id);
+            }
+            None => {
+                IOTA_PRIMARY_OMIKRON_CONNECTION.remove(&iota_id);
+            }
+        }
     }
 
     connections_empty
@@ -87,9 +91,9 @@ pub async fn get_all_connections()
         let iota_id = *entry.key();
         let omikron_ids = entry.value().clone();
 
-        if let Ok(users) = sql::sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
+        if let Ok(users) = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await {
             for user in users {
-                let user_id = user.0 as i64;
+                let user_id = user.id.0;
                 if let Some(conn) = USER_STATUS_MAP.get(&user_id) {
                     let user_omikron_id = conn.omikron_id;
                     if omikron_ids.contains(&user_omikron_id) {
@@ -117,6 +121,12 @@ pub fn track_user_status(user_id: i64, status: UserStatus, omikron_id: i64) {
     );
 }
 
+pub fn untrack_user_status(user_id: i64, omikron_id: i64) {
+    USER_STATUS_MAP.remove_if(&user_id, |_, connection| {
+        connection.omikron_id == omikron_id
+    });
+}
+
 pub fn get_user_status(user_id: i64) -> Option<UserConnection> {
     USER_STATUS_MAP.get(&user_id).map(|v| v.clone())
 }
@@ -128,57 +138,38 @@ pub fn untrack_many_users(user_ids: &[i64]) {
 }
 
 pub async fn untrack_omikron(omikron_id: i64) {
-    let primary_keys_to_remove: Vec<i64> = IOTA_PRIMARY_OMIKRON_CONNECTION
-        .iter()
-        .filter(|entry| *entry.value() == omikron_id)
-        .map(|entry| *entry.key())
-        .collect();
-
-    for key in primary_keys_to_remove {
-        IOTA_PRIMARY_OMIKRON_CONNECTION.remove(&key);
-    }
-
     let mut offline_iotas = Vec::new();
-    let mut primary_to_remove = Vec::new();
+    let mut primary_replacements = Vec::new();
 
-    // Collect iotas and primary info first
-    for r in IOTA_OMIKRON_CONNECTIONS.iter() {
-        let iota_id = *r.key();
-        let mut connections = r.value().clone();
-        connections.retain(|&id| id != omikron_id);
-
-        if connections.is_empty() {
+    for mut entry in IOTA_OMIKRON_CONNECTIONS.iter_mut() {
+        let iota_id = *entry.key();
+        entry.retain(|&id| id != omikron_id);
+        if entry.is_empty() {
             offline_iotas.push(iota_id);
-        }
-
-        if IOTA_PRIMARY_OMIKRON_CONNECTION
+        } else if IOTA_PRIMARY_OMIKRON_CONNECTION
             .get(&iota_id)
-            .map(|p| *p == omikron_id)
-            .unwrap_or(false)
+            .is_some_and(|primary| *primary == omikron_id)
         {
-            primary_to_remove.push(iota_id);
+            primary_replacements.push((iota_id, entry[0]));
         }
-
-        // Update the connections vector after filtering
-        IOTA_OMIKRON_CONNECTIONS.insert(iota_id, connections);
     }
 
-    // Step 2: Remove primary connections safely
-    for iota_id in primary_to_remove {
-        IOTA_PRIMARY_OMIKRON_CONNECTION.remove(&iota_id);
+    for iota_id in &offline_iotas {
+        IOTA_OMIKRON_CONNECTIONS.remove_if(iota_id, |_, connections| connections.is_empty());
+        IOTA_PRIMARY_OMIKRON_CONNECTION.remove(iota_id);
     }
 
-    // Step 3: Remove users that were on this omikron
+    for (iota_id, replacement) in primary_replacements {
+        IOTA_PRIMARY_OMIKRON_CONNECTION.insert(iota_id, replacement);
+    }
+
     USER_STATUS_MAP.retain(|_, status| status.omikron_id != omikron_id);
 
-    // Step 4: For offline iotas, remove associated users from USER_STATUS_MAP
     for iota_id in offline_iotas {
-        if let Ok(users) = sql::sql::get_users_by_iota_id(iota_id.try_into().unwrap()).await {
+        if let Ok(users) = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await {
             for user in users {
-                USER_STATUS_MAP.remove(&(user.0 as i64));
+                USER_STATUS_MAP.remove(&user.id.0);
             }
         }
-        // Finally remove the empty connections vector
-        IOTA_OMIKRON_CONNECTIONS.remove(&iota_id);
     }
 }

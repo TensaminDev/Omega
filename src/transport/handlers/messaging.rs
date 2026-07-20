@@ -1,0 +1,1 @@
+/* Message delivery remains in the connection dispatcher until the protocol exposes a separate message handler contract. */

@@ -1,37 +1,27 @@
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
-use rand::{Rng, thread_rng};
-
-static LINKS: Lazy<DashMap<String, String>> = Lazy::new(DashMap::new);
+use crate::db::short_link_repo;
+use rand::RngExt;
 
 const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHJKLMNPRSTUVWXYZ1234567890";
 
 pub async fn add_short_link(long: &str) -> Result<String, ()> {
-    let raw = generate_unique_short_link().await;
-    LINKS.insert(raw.clone(), long.to_string());
-
-    Ok(format!(
-        "hmtps://omega.tensamin.net/direct/{}",
-        format_with_dashes(&raw)
-    ))
-}
-
-async fn generate_unique_short_link() -> String {
     loop {
-        let short = generate_short_link().await;
-        if !LINKS.contains_key(&short) {
-            return short;
+        let raw = generate_short_link().await;
+        if short_link_repo::insert(&raw, long).await.map_err(|_| ())? {
+            return Ok(format!(
+                "https://omega.tensamin.net/direct/{}",
+                format_with_dashes(&raw)
+            ));
         }
     }
 }
 
 pub async fn generate_short_link() -> String {
-    let len = short_length();
+    let len = short_length().await;
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     (0..len)
         .map(|_| {
-            let idx = rng.gen_range(0..CHARSET.len());
+            let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect()
@@ -46,17 +36,17 @@ pub async fn get_short_link(short: &str) -> Result<String, ()> {
     let frag = short.replace(key, "");
     let normalized = normalize_short(&key);
 
-    if let Ok(t) = LINKS.get(&normalized).map(|v| v.value().clone()).ok_or(()) {
-        Ok(format!("{}{}", t, frag))
-    } else {
-        Err(())
-    }
+    let target = short_link_repo::get(&normalized)
+        .await
+        .map_err(|_| ())?
+        .ok_or(())?;
+    Ok(format!("{}{}", target, frag))
 }
 
 /* ---------------- helpers ---------------- */
 
-fn short_length() -> usize {
-    let count = LINKS.len();
+async fn short_length() -> usize {
+    let count = short_link_repo::count().await.unwrap_or(0);
 
     match count {
         0..=1_999 => 4,

@@ -8,9 +8,8 @@ use zip::ZipArchive;
 
 use crate::log;
 
-static WORKING_DIR: Lazy<PathBuf> = Lazy::new(|| {
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-});
+static WORKING_DIR: Lazy<PathBuf> =
+    Lazy::new(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
 pub fn delete_file(path: &str, name: &str) -> bool {
     let dir = Path::new(&get_directory()).join(path);

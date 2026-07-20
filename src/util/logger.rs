@@ -269,8 +269,7 @@ fn format_data_container(data: Vec<(DataTypeId, DataValue)>, version: Version) -
                 DataValue::Str(s) => format!("{}=\"{}\"", key_str, s),
 
                 DataValue::Container(inner) => {
-                    let inner_formatted =
-                        format_data_container(inner, version.clone());
+                    let inner_formatted = format_data_container(inner, version.clone());
                     format!("{}={{ {} }}", key_str, inner_formatted)
                 }
 

@@ -1,4 +1,4 @@
-use crate::transport::omikron_connection::OmikronConnection;
+use crate::transport::connection::OmikronConnection;
 use dashmap::DashMap;
 use mtp::codec::CommunicationValue;
 use once_cell::sync::Lazy;
@@ -27,11 +27,9 @@ pub async fn remove_omikron(omikron_id: i64) {
 }
 
 pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
-    let mut rng = rand::thread_rng();
-
     let keys: Vec<_> = OMIKRON_CONNECTIONS.iter().map(|e| *e.key()).collect();
 
-    if let Some(key) = keys.into_iter().choose(&mut rng) {
+    if let Some(key) = keys.into_iter().choose(&mut rand::rng()) {
         if let Some(entry) = OMIKRON_CONNECTIONS.get(&key) {
             return Ok(entry.clone());
         }
