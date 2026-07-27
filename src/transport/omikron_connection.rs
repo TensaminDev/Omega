@@ -245,16 +245,20 @@ impl OmikronConnection {
     }
     pub async fn close(self: Arc<Self>) {
         log_in!(
-            self.get_omikron_id().await.unwrap_or(0),
+            self.id as i64,
             PrintType::Omega,
             "Omikron connection Closed"
         );
+        if let Some(sender) = self.sender.lock().await.take() {
+            sender.close();
+        }
     }
     async fn cleanup(self: Arc<Self>) {
         if self.id != 0 {
             log_in!(self.id as i64, PrintType::Omega, "Omikron disconnected");
-            omikron_manager::remove_omikron(self.id as i64).await;
-            crate::sql::user_online_tracker::untrack_omikron(self.id as i64).await;
+            if omikron_manager::remove_omikron(self.id as i64, &self).await {
+                crate::sql::user_online_tracker::untrack_omikron(self.id as i64).await;
+            }
         }
         if let Some(handle) = self.cleanup_handle.lock().unwrap().take() {
             handle.abort();

@@ -22,8 +22,10 @@ pub async fn add_omikron(conn: Arc<OmikronConnection>) {
     }
 }
 
-pub async fn remove_omikron(omikron_id: i64) {
-    OMIKRON_CONNECTIONS.remove(&omikron_id);
+pub async fn remove_omikron(omikron_id: i64, connection: &Arc<OmikronConnection>) -> bool {
+    OMIKRON_CONNECTIONS
+        .remove_if(&omikron_id, |_, current| Arc::ptr_eq(current, connection))
+        .is_some()
 }
 
 pub fn get_connected_omikron(omikron_id: i64) -> Option<Arc<OmikronConnection>> {
