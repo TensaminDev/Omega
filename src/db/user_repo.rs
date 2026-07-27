@@ -4,15 +4,92 @@ use crate::{
     models::{IotaId, User, UserId},
 };
 use mtp::crypto::PublicKeyBundle;
-use sqlx::FromRow;
+use sqlx::{FromRow, Row};
+
+pub const MAX_PROTOCOL_ID: i64 = (1_i64 << 48) - 1;
+const ID_ALLOCATION_ATTEMPTS: usize = 16;
 
 pub async fn get_register_id() -> Result<UserId> {
-    let bytes = *uuid::Uuid::now_v7().as_bytes();
-    let id =
-        i64::from_be_bytes(bytes[8..].try_into().map_err(|_| {
-            OmegaError::Validation("generated ID has an invalid length".to_string())
-        })?) & i64::MAX;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let ts = timestamp as i64;
+    if ts >= 1 && ts <= MAX_PROTOCOL_ID {
+        return Ok(UserId::from(ts));
+    }
+
+    // Fall back to random if the timestamp is outside the 48-bit range.
+    let id = (rand::random::<u64>() & ((1_u64 << 48) - 1)) as i64;
     Ok(UserId::from(id.max(1)))
+}
+
+pub fn valid_protocol_id(id: i64) -> bool {
+    (1..=MAX_PROTOCOL_ID).contains(&id)
+}
+
+/// Allocate an ID that is durable, short-lived, and bound to the connected
+/// Iota.  `token` is presented again when completing the registration.
+pub async fn allocate_registration(iota_id: IotaId, request_id: u32) -> Result<(UserId, String)> {
+    if !valid_protocol_id(iota_id.0) {
+        return Err(OmegaError::Validation(
+            "Iota ID is outside the 48-bit protocol range".into(),
+        ));
+    }
+
+    for _ in 0..ID_ALLOCATION_ATTEMPTS {
+        let id = get_register_id().await?;
+        let token = uuid::Uuid::new_v4().to_string();
+        let result = sqlx::query(
+            "INSERT INTO registration_leases (token, user_id, iota_id, request_id, expires_at) \
+             VALUES (?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))",
+        )
+        .bind(&token)
+        .bind(id.0)
+        .bind(iota_id.0)
+        .bind(request_id)
+        .execute(&pool().await?)
+        .await;
+        match result {
+            Ok(_) => return Ok((id, token)),
+            Err(error) if is_duplicate_key(&error) => {
+                let existing = sqlx::query(
+                    "SELECT user_id, token, expires_at >= UTC_TIMESTAMP() AS current \
+                     FROM registration_leases WHERE iota_id = ? AND request_id = ?",
+                )
+                .bind(iota_id.0)
+                .bind(request_id)
+                .fetch_optional(&pool().await?)
+                .await?;
+                if let Some(existing) = existing {
+                    let current: i8 = existing.get("current");
+                    if current != 0 {
+                        return Ok((
+                            UserId::from(existing.get::<i64, _>("user_id")),
+                            existing.get::<String, _>("token"),
+                        ));
+                    }
+                }
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(OmegaError::Validation(
+        "could not allocate a unique registration ID".into(),
+    ))
+}
+
+pub(crate) fn is_duplicate_key(error: &sqlx::Error) -> bool {
+    error.as_database_error().is_some_and(|database| {
+        // MySQL's generic database-error API exposes SQLSTATE (23000) as
+        // `code()`.  The driver-specific duplicate-key number is retained in
+        // the diagnostic message.
+        database.code().as_deref() == Some("23000") && database.message().contains("1062")
+    })
 }
 
 const USER_BY_USERNAME_QUERY: &str = "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE username = ?";
@@ -179,16 +256,99 @@ pub async fn register_complete_user(
     public_key: PublicKeyBundle,
     iota_id: IotaId,
     token: String,
+    registration_token: String,
 ) -> Result<()> {
-    sqlx::query(
+    if !valid_protocol_id(id.0) || !valid_protocol_id(iota_id.0) {
+        return Err(OmegaError::Validation(
+            "user or Iota ID is outside the 48-bit protocol range".into(),
+        ));
+    }
+    if !valid_username(&username) {
+        return Err(OmegaError::Validation("invalid username".into()));
+    }
+
+    let mut transaction = pool().await?.begin().await?;
+    let lease = sqlx::query(
+        "SELECT iota_id, completed_at IS NOT NULL AS completed, \
+         expires_at >= UTC_TIMESTAMP() AS current FROM registration_leases \
+         WHERE token = ? AND user_id = ? FOR UPDATE",
+    )
+    .bind(&registration_token)
+    .bind(id.0)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .ok_or_else(|| OmegaError::Validation("unknown registration lease".into()))?;
+    let lease_iota_id: i64 = lease.get("iota_id");
+    let completed: i8 = lease.get("completed");
+    let current: i8 = lease.get("current");
+    if lease_iota_id != iota_id.0 || (completed == 0 && current == 0) {
+        return Err(OmegaError::Validation(
+            "expired or mismatched registration lease".into(),
+        ));
+    }
+
+    let insert_result = sqlx::query(
         "INSERT INTO users (id, username, public_key, iota_id, token) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(id.0)
-    .bind(username.into_bytes())
+    .bind(username.as_bytes())
     .bind(public_key.as_bytes())
     .bind(iota_id.0)
-    .bind(token.into_bytes())
-    .execute(&pool().await?)
-    .await?;
+    .bind(token.as_bytes())
+    .execute(&mut *transaction)
+    .await;
+
+    let result: Result<()> = match insert_result {
+        Ok(_) => Ok(()),
+        Err(insert_error) => {
+            let existing = sqlx::query_as::<_, UserRow>(USER_BY_ID_QUERY)
+                .bind(id.0)
+                .fetch_optional(&mut *transaction)
+                .await?;
+            match existing
+                .map(User::try_from)
+                .transpose()
+                .map_err(OmegaError::from)?
+            {
+                Some(existing)
+                    if existing.iota_id == iota_id
+                        && existing.username == username
+                        && existing.public_key.as_bytes() == public_key.as_bytes()
+                        && existing.token == token =>
+                {
+                    Ok(())
+                }
+                _ => Err(insert_error.into()),
+            }
+        }
+    };
+    result?;
+    sqlx::query("UPDATE registration_leases SET completed_at = UTC_TIMESTAMP() WHERE token = ?")
+        .bind(&registration_token)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
     Ok(())
+}
+
+fn valid_username(username: &str) -> bool {
+    !username.is_empty()
+        && username.chars().count() <= 15
+        && !username.chars().any(char::is_control)
+        && !username.contains(['/', '\\'])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PROTOCOL_ID, get_register_id, valid_protocol_id};
+
+    #[tokio::test]
+    async fn generated_registration_ids_fit_the_mtp_wire_range() {
+        for _ in 0..128 {
+            assert!(valid_protocol_id(get_register_id().await.unwrap().0));
+        }
+        assert!(!valid_protocol_id(0));
+        assert!(valid_protocol_id(MAX_PROTOCOL_ID));
+        assert!(!valid_protocol_id(MAX_PROTOCOL_ID + 1));
+    }
 }

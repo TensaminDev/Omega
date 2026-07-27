@@ -15,12 +15,12 @@ use crate::server::{
     validation::{parse_positive_id, validate_non_empty},
 };
 use crate::sql::user_online_tracker::{get_all_connections, get_iota_primary_omikron_connection};
-use crate::transport::omikron_manager::get_random_omikron;
+use crate::transport::omikron_manager::{get_connected_omikron, get_random_omikron};
 use crate::util::file_util::get_directory;
 use base64::Engine as _;
 use bytes::Bytes;
 use http::{Method, StatusCode};
-use mtp::webserver::{Http3Request, Http3Response, RouteParams};
+use mtp::webserver::{HttpRequest, HttpResponse, RouteParams};
 use std::collections::BTreeMap;
 
 fn error_body(error: &OmegaError) -> String {
@@ -75,20 +75,19 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
         }
         ["api", "get", "omikron", id] => {
             let id = parse_positive_id(id)?;
-            let omikron = match get_omikron_by_id(id.into()).await {
-                Ok(value) => value,
-                Err(_) => {
-                    let fallback_id =
-                        if let Some(fallback_id) = get_iota_primary_omikron_connection(id) {
-                            fallback_id
-                        } else {
-                            let user = get_by_user_id(UserId::from(id)).await?;
-                            get_iota_primary_omikron_connection(user.iota_id.0)
-                                .ok_or(OmegaError::NotFound)?
-                        };
-                    get_omikron_by_id(fallback_id.into()).await?
-                }
+            let omikron_id = if get_connected_omikron(id).is_some() {
+                id
+            } else if let Some(omikron_id) = get_iota_primary_omikron_connection(id) {
+                omikron_id
+            } else {
+                let user = get_by_user_id(UserId::from(id)).await?;
+                get_iota_primary_omikron_connection(user.iota_id.0).ok_or(OmegaError::NotFound)?
             };
+
+            // Database rows describe registered Omikrons. The public discovery
+            // API must expose only routes backed by a currently live transport.
+            get_connected_omikron(omikron_id).ok_or(OmegaError::NotFound)?;
+            let omikron = get_omikron_by_id(omikron_id.into()).await?;
             Ok((
                 StatusCode::OK,
                 json(&OmikronResponse {
@@ -178,7 +177,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
     }
 }
 
-pub async fn handle(request: Http3Request, response: Http3Response) -> Http3Response {
+pub async fn handle(request: HttpRequest, response: HttpResponse) -> HttpResponse {
     let method = request.method;
     let path = request.uri.path().to_string();
     if method != Method::OPTIONS && !middleware::allow(request.remote_addr.ip(), &path) {
@@ -238,9 +237,9 @@ pub async fn handle(request: Http3Request, response: Http3Response) -> Http3Resp
 }
 
 pub async fn handle_pattern(
-    request: Http3Request,
-    response: Http3Response,
+    request: HttpRequest,
+    response: HttpResponse,
     _params: RouteParams,
-) -> Http3Response {
+) -> HttpResponse {
     handle(request, response).await
 }

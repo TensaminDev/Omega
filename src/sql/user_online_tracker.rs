@@ -19,6 +19,11 @@ static IOTA_OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Vec<i64>>> = Lazy::new(DashMa
 // UserID -> UserStatus
 static USER_STATUS_MAP: Lazy<DashMap<i64, UserConnection>> = Lazy::new(DashMap::new);
 
+// The legacy account map is kept for Iota-only/offline compatibility.  Client
+// transports are tracked independently: two devices must never overwrite each
+// other's route merely because they authenticate as the same account.
+static USER_SESSION_STATUS_MAP: Lazy<DashMap<(i64, i64), UserConnection>> = Lazy::new(DashMap::new);
+
 pub fn track_iota_connection(iota_id: i64, omikron_id: i64, primary: bool) {
     let mut entry = IOTA_OMIKRON_CONNECTIONS
         .entry(iota_id)
@@ -121,13 +126,63 @@ pub fn track_user_status(user_id: i64, status: UserStatus, omikron_id: i64) {
     );
 }
 
+pub fn track_user_session_status(
+    user_id: i64,
+    session_id: i64,
+    status: UserStatus,
+    omikron_id: i64,
+) {
+    USER_SESSION_STATUS_MAP.insert(
+        (user_id, session_id),
+        UserConnection {
+            connection_type: status,
+            omikron_id,
+        },
+    );
+}
+
 pub fn untrack_user_status(user_id: i64, omikron_id: i64) {
     USER_STATUS_MAP.remove_if(&user_id, |_, connection| {
         connection.omikron_id == omikron_id
     });
 }
 
+pub fn untrack_user_session_status(user_id: i64, session_id: i64, omikron_id: i64) {
+    USER_SESSION_STATUS_MAP.remove_if(&(user_id, session_id), |_, connection| {
+        connection.omikron_id == omikron_id
+    });
+}
+
+pub fn update_user_session_status(user_id: i64, status: UserStatus) {
+    for mut entry in USER_SESSION_STATUS_MAP.iter_mut() {
+        if entry.key().0 == user_id {
+            entry.connection_type = status.clone();
+        }
+    }
+    // Preserve the account preference for legacy routes as well.
+    if let Some(mut entry) = USER_STATUS_MAP.get_mut(&user_id) {
+        entry.connection_type = status;
+    }
+}
+
 pub fn get_user_status(user_id: i64) -> Option<UserConnection> {
+    // A connected visible session is preferred.  Invisible sessions remain
+    // routable but are intentionally presented as offline when they are the
+    // only active routes.
+    let sessions: Vec<UserConnection> = USER_SESSION_STATUS_MAP
+        .iter()
+        .filter(|entry| entry.key().0 == user_id)
+        .map(|entry| entry.value().clone())
+        .collect();
+    if let Some(status) = sessions
+        .iter()
+        .find(|status| status.connection_type != UserStatus::user_invisible)
+    {
+        return Some(status.clone());
+    }
+    if let Some(status) = sessions.first() {
+        return Some(status.clone());
+    }
     USER_STATUS_MAP.get(&user_id).map(|v| v.clone())
 }
 
@@ -164,6 +219,7 @@ pub async fn untrack_omikron(omikron_id: i64) {
     }
 
     USER_STATUS_MAP.retain(|_, status| status.omikron_id != omikron_id);
+    USER_SESSION_STATUS_MAP.retain(|_, status| status.omikron_id != omikron_id);
 
     for iota_id in offline_iotas {
         if let Ok(users) = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await {

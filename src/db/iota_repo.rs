@@ -21,13 +21,31 @@ pub async fn get_iota_by_id(id: IotaId) -> Result<Iota> {
 }
 
 pub async fn create_new_iota(public_key: PublicKeyBundle) -> Result<IotaId> {
-    let id = crate::db::user_repo::get_register_id().await?;
-    let iota_id = IotaId::from(id.0);
-    register_complete_iota(iota_id, public_key).await?;
-    Ok(iota_id)
+    for _ in 0..16 {
+        let id = crate::db::user_repo::get_register_id().await?;
+        let iota_id = IotaId::from(id.0);
+        match register_complete_iota(iota_id, public_key.clone()).await {
+            Ok(()) => return Ok(iota_id),
+            Err(OmegaError::Database(error)) => {
+                if crate::db::user_repo::is_duplicate_key(&error) {
+                    continue;
+                }
+                return Err(OmegaError::Database(error));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(OmegaError::Validation(
+        "could not allocate a unique Iota ID".into(),
+    ))
 }
 
 pub async fn register_complete_iota(id: IotaId, public_key: PublicKeyBundle) -> Result<()> {
+    if !crate::db::user_repo::valid_protocol_id(id.0) {
+        return Err(OmegaError::Validation(
+            "Iota ID is outside the 48-bit protocol range".into(),
+        ));
+    }
     sqlx::query("INSERT INTO iotas (id, public_key) VALUES (?, ?)")
         .bind(id.0)
         .bind(public_key.as_bytes())

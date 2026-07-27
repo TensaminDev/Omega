@@ -1,3 +1,8 @@
+CREATE TABLE IF NOT EXISTS iotas (
+    id BIGINT NOT NULL PRIMARY KEY,
+    public_key BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id BIGINT NOT NULL PRIMARY KEY,
     iota_id BIGINT NOT NULL,
@@ -10,14 +15,15 @@ CREATE TABLE IF NOT EXISTS users (
     sub_end BIGINT NOT NULL DEFAULT 0,
     public_key BLOB NOT NULL,
     token BLOB NOT NULL,
+
     UNIQUE KEY uk_users_username (username),
-    UNIQUE KEY uk_users_iota_id (iota_id)
+    KEY idx_users_iota_id (iota_id),
+
+    CONSTRAINT fk_users_iota
+        FOREIGN KEY (iota_id)
+        REFERENCES iotas (id)
 );
 
-CREATE TABLE IF NOT EXISTS iotas (
-    id BIGINT NOT NULL PRIMARY KEY,
-    public_key BLOB NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS omikrons (
     id BIGINT NOT NULL PRIMARY KEY,

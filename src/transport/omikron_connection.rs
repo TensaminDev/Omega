@@ -91,10 +91,29 @@ impl OmikronConnection {
                     .retain(|_, task| task.inserted_at.elapsed() < MAX_WAITING_AGE);
             }
         }));
-        while let Ok(value) = receiver.receive().await {
-            if let Err(error) = self.clone().process_message(value).await {
-                log_err!(0, PrintType::Omega, "Error processing message: {}", error);
-                if matches!(error, crate::error::OmegaError::NotConnected) {
+        loop {
+            match receiver.receive().await {
+                Ok(value) => {
+                    if let Err(error) = self.clone().process_message(value).await {
+                        log_err!(
+                            self.id as i64,
+                            PrintType::Omega,
+                            "Error processing Omikron message: {}",
+                            error
+                        );
+                        if matches!(error, crate::error::OmegaError::NotConnected) {
+                            break;
+                        }
+                    }
+                }
+                Err(error) => {
+                    log_err!(
+                        self.id as i64,
+                        PrintType::Omega,
+                        "Omikron receive loop ended: {}; transport close reason: {:?}",
+                        error,
+                        receiver.close_reason()
+                    );
                     break;
                 }
             }
@@ -132,6 +151,9 @@ impl OmikronConnection {
             }
             Some(CommunicationType::UserDisconnected) => {
                 crate::transport::handlers::presence::user_disconnected(self, value, id).await
+            }
+            Some(CommunicationType::ClientChanged) => {
+                crate::transport::handlers::presence::client_changed(self, value, id).await
             }
             Some(CommunicationType::IotaConnected) => {
                 crate::transport::handlers::presence::iota_connected(self, value, id).await
@@ -259,40 +281,38 @@ pub async fn complete_register(_: PublicKeyBundle, _: Option<String>) -> u64 {
 pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let cert_pem = load_file_vec("certs", "cert.pem")?;
     let key_pem = load_file_vec("certs", "key.pem")?;
-    let web_config = server::server::build_web_config()?;
-    let host_config = HostConfig::new(
-        IpAddr::from(Ipv4Addr::new(0, 0, 0, 0)),
-        port,
-        cert_pem,
-        key_pem,
-    )
-    .with_policy(Policy {
-        send_mode: SendMode::SingleStreamPerMessage,
-        max_message_size: 1_000_000_000,
-        handshake_max_message_size: 1_000_000,
-        close_frame_len: u32::MAX,
-        application_close_code: 0,
-        open_stream_timeout: Duration::from_millis(2_000),
-        write_timeout: Duration::from_millis(2_000),
-        accept_stream_timeout: Duration::from_millis(10_000),
-        read_timeout: Duration::from_millis(30_000),
-        keep_alive_interval: Some(Duration::from_secs(6)),
-        max_idle_timeout: Some(Duration::from_secs(30)),
-        force_close_delay: Duration::from_millis(300),
-        receiver_queue_capacity: 1000,
-        max_concurrent_stream_tasks: 10,
-        persistent_stream_max_retries: 5,
-        persistent_stream_retry_backoff: Duration::from_secs(5),
-        max_frames_per_stream: None,
-    })
-    .with_authentication(
-        load_keyring(),
-        Box::new(|id, description| Box::pin(get_by_omikron_id(id, description))),
-        Box::new(|key, description| Box::pin(complete_register(key, description))),
-    )
-    .with_authentication_policy(AuthenticationPolicy::ForceAuthentication);
+    let web_config = server::server::build_web_config()?
+        .serve_tcp_https(true)
+        .max_tcp_connections(256);
+    let ip = IpAddr::from(Ipv4Addr::new(0, 0, 0, 0));
+    let host_config = HostConfig::new(ip, port, cert_pem, key_pem)
+        .with_policy(Policy {
+            send_mode: SendMode::SingleStreamPerMessage,
+            max_message_size: 1_000_000_000,
+            handshake_max_message_size: 1_000_000,
+            close_frame_len: u32::MAX,
+            application_close_code: 0,
+            open_stream_timeout: Duration::from_millis(5_000),
+            write_timeout: Duration::from_millis(5_000),
+            accept_stream_timeout: Duration::from_millis(10_000),
+            read_timeout: Duration::from_millis(30_000),
+            keep_alive_interval: Some(Duration::from_secs(6)),
+            max_idle_timeout: Some(Duration::from_secs(30)),
+            force_close_delay: Duration::from_millis(300),
+            receiver_queue_capacity: 1000,
+            max_concurrent_stream_tasks: 64,
+            persistent_stream_max_retries: 5,
+            persistent_stream_retry_backoff: Duration::from_secs(5),
+            max_frames_per_stream: None,
+        })
+        .with_authentication(
+            load_keyring(),
+            Box::new(|id, description| Box::pin(get_by_omikron_id(id, description))),
+            Box::new(|key, description| Box::pin(complete_register(key, description))),
+        )
+        .with_authentication_policy(AuthenticationPolicy::ForceAuthentication);
     let mut server = MTPWebServer::new(host_config, web_config).await?;
-    log!("OmegaServer listening on port {}", port);
+    log!("OmegaServer listening on {}:{}", ip.to_string(), port);
     loop {
         let mut conn = match server.accept().await {
             Ok(Some(conn)) => conn,

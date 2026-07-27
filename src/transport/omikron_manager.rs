@@ -26,12 +26,18 @@ pub async fn remove_omikron(omikron_id: i64) {
     OMIKRON_CONNECTIONS.remove(&omikron_id);
 }
 
+pub fn get_connected_omikron(omikron_id: i64) -> Option<Arc<OmikronConnection>> {
+    OMIKRON_CONNECTIONS
+        .get(&omikron_id)
+        .map(|connection| connection.clone())
+}
+
 pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
     let keys: Vec<_> = OMIKRON_CONNECTIONS.iter().map(|e| *e.key()).collect();
 
     if let Some(key) = keys.into_iter().choose(&mut rand::rng()) {
-        if let Some(entry) = OMIKRON_CONNECTIONS.get(&key) {
-            return Ok(entry.clone());
+        if let Some(connection) = get_connected_omikron(key) {
+            return Ok(connection);
         }
     }
 

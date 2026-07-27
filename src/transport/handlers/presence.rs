@@ -21,7 +21,18 @@ pub async fn user_connected(
             .and_then(UserStatus::from_str)
             .unwrap_or(UserStatus::user_online);
         if let Ok(user_id) = i64::try_from(user_id) {
-            user_online_tracker::track_user_status(user_id, status, omikron_id);
+            if let Some(session_id) = value
+                .get_data(DataType::SessionId)
+                .as_number()
+                .and_then(|id| i64::try_from(id).ok())
+                .filter(|id| *id > 0)
+            {
+                user_online_tracker::track_user_session_status(
+                    user_id, session_id, status, omikron_id,
+                );
+            } else {
+                user_online_tracker::track_user_status(user_id, status, omikron_id);
+            }
         }
     }
     Ok(())
@@ -34,8 +45,52 @@ pub async fn user_disconnected(
 ) -> OmikronResult<()> {
     log_in!(crate::util::logger::PrintType::Omega, "User disconnected");
     if let Some(user_id) = value.get_data(DataType::UserId).as_number() {
-        user_online_tracker::untrack_user_status(user_id as i64, omikron_id);
+        if let Some(session_id) = value
+            .get_data(DataType::SessionId)
+            .as_number()
+            .and_then(|id| i64::try_from(id).ok())
+            .filter(|id| *id > 0)
+        {
+            user_online_tracker::untrack_user_session_status(
+                user_id as i64,
+                session_id,
+                omikron_id,
+            );
+        } else {
+            user_online_tracker::untrack_user_status(user_id as i64, omikron_id);
+        }
     }
+    Ok(())
+}
+
+pub async fn client_changed(
+    _: Arc<OmikronConnection>,
+    value: CommunicationValue,
+    _: i64,
+) -> OmikronResult<()> {
+    let Some(user_id) = value
+        .get_data(DataType::UserId)
+        .as_number()
+        .and_then(|id| i64::try_from(id).ok())
+    else {
+        return Ok(());
+    };
+    let Some(status) = value
+        .get_data(DataType::UserState)
+        .as_str()
+        .and_then(UserStatus::from_str)
+    else {
+        return Ok(());
+    };
+    // Connectivity is derived from routes.  Clients may choose only public
+    // presence preferences, never server/offline states.
+    if matches!(
+        status,
+        UserStatus::user_offline | UserStatus::iota_offline | UserStatus::iota_online
+    ) {
+        return Ok(());
+    }
+    user_online_tracker::update_user_session_status(user_id, status);
     Ok(())
 }
 

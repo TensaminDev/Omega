@@ -9,8 +9,8 @@ pub struct RateLimitConfig {
     pub transport_connections_per_ip: usize,
 }
 
-pub fn cors_origin() -> String {
-    env::var("CORS_ORIGIN").unwrap_or_else(|_| "https://tensamin.net".to_string())
+pub const fn cors_origin() -> &'static str {
+    "*"
 }
 
 impl Default for RateLimitConfig {
