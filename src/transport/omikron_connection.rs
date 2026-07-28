@@ -6,7 +6,7 @@ use crate::{
 };
 use dashmap::DashMap;
 use mtp::{
-    codec::{CommunicationType, CommunicationValue, DataType, DataValue},
+    codec::{CommunicationType, CommunicationValue},
     crypto::PublicKeyBundle,
     host::{AuthenticationPolicy, HostConfig, Policy, SendMode},
     webserver::{MTPWebServer, WebMtpReceiver, WebMtpSender},
@@ -19,10 +19,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{
-    sync::{Mutex, RwLock},
-    time::interval,
-};
+use tokio::{sync::Mutex, time::interval};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_WAITING_AGE: Duration = Duration::from_secs(60);
@@ -52,7 +49,6 @@ pub struct WaitingTask {
 pub struct OmikronConnection {
     id: u64,
     sender: Mutex<Option<WebMtpSender>>,
-    pub ping: RwLock<i64>,
     waiting_tasks: DashMap<u32, WaitingTask>,
     cleanup_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -69,7 +65,6 @@ impl OmikronConnection {
         Arc::new(Self {
             id,
             sender: Mutex::new(Some(sender)),
-            ping: RwLock::new(-1),
             waiting_tasks: DashMap::new(),
             cleanup_handle: std::sync::Mutex::new(None),
         })
@@ -127,15 +122,10 @@ impl OmikronConnection {
     }
 
     async fn process_message(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
-        if !value.is_type(CommunicationType::Pong) && !value.is_type(CommunicationType::Ping) {
-            log_cv_in!(PrintType::Omikron, &value);
-        }
+        log_cv_in!(PrintType::Omikron, &value);
         if let Some((_, task)) = self.waiting_tasks.remove(&value.get_id()) {
             let _ = (task.task)(self.clone(), value);
             return Ok(());
-        }
-        if value.is_type(CommunicationType::Ping) {
-            return self.ping(value).await;
         }
         self.dispatch(value).await
     }
@@ -215,17 +205,8 @@ impl OmikronConnection {
         }
     }
 
-    async fn ping(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
-        if let DataValue::SignedNumber(last_ping) = value.get_data(DataType::LastPing) {
-            *self.ping.write().await = *last_ping as i64;
-        }
-        let response = CommunicationValue::new(CommunicationType::Pong).with_id(value.get_id());
-        self.send(&response).await
-    }
     pub(crate) async fn send(self: Arc<Self>, value: &CommunicationValue) -> OmikronResult<()> {
-        if !value.is_type(CommunicationType::Pong) && !value.is_type(CommunicationType::Ping) {
-            log_cv_out!(PrintType::Omikron, value);
-        }
+        log_cv_out!(PrintType::Omikron, value);
         let guard = self.sender.lock().await;
         let sender = guard
             .as_ref()
