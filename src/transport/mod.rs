@@ -1,3 +1,4 @@
+pub mod capabilities;
 pub mod connection;
 pub mod handlers;
 pub mod omikron_connection;

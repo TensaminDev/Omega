@@ -14,8 +14,10 @@ use crate::server::{
     middleware,
     validation::{parse_positive_id, validate_non_empty},
 };
-use crate::sql::user_online_tracker::{get_all_connections, get_iota_primary_omikron_connection};
-use crate::transport::omikron_manager::{get_connected_omikron, get_random_omikron};
+use crate::transport::omikron_manager::{
+    get_all_connections, get_connected_omikron, get_iota_primary_omikron_connection,
+    get_random_omikron,
+};
 use crate::util::file_util::get_directory;
 use base64::Engine as _;
 use bytes::Bytes;

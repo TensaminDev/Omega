@@ -8,6 +8,7 @@ pub struct User {
     pub username: String,
     pub display: Option<String>,
     pub status: Option<String>,
+    pub presence_preference: String,
     pub about: Option<String>,
     pub avatar: Option<Vec<u8>>,
     pub sub_level: i32,

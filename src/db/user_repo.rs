@@ -2,9 +2,11 @@ use crate::{
     db::pool,
     error::{OmegaError, Result},
     models::{IotaId, User, UserId},
+    sql::connection_status::UserStatus,
 };
 use mtp::crypto::PublicKeyBundle;
-use sqlx::{FromRow, Row};
+use sqlx::{FromRow, MySql, QueryBuilder, Row};
+use std::collections::HashMap;
 
 pub const MAX_PROTOCOL_ID: i64 = (1_i64 << 48) - 1;
 const ID_ALLOCATION_ATTEMPTS: usize = 16;
@@ -92,9 +94,9 @@ pub(crate) fn is_duplicate_key(error: &sqlx::Error) -> bool {
     })
 }
 
-const USER_BY_USERNAME_QUERY: &str = "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE username = ?";
-const USER_BY_ID_QUERY: &str = "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE id = ?";
-const USERS_BY_IOTA_ID_QUERY: &str = "SELECT id, iota_id, username, display, status, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE iota_id = ?";
+const USER_BY_USERNAME_QUERY: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE username = ?";
+const USER_BY_ID_QUERY: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE id = ?";
+const USER_COLUMNS: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token FROM users";
 
 #[derive(FromRow)]
 struct UserRow {
@@ -103,6 +105,7 @@ struct UserRow {
     username: Vec<u8>,
     display: Option<Vec<u8>>,
     status: Option<Vec<u8>>,
+    presence_preference: Vec<u8>,
     about: Option<Vec<u8>>,
     avatar: Option<Vec<u8>>,
     sub_level: i32,
@@ -125,6 +128,7 @@ impl TryFrom<UserRow> for User {
             username: decode(row.username)?,
             display: row.display.map(decode).transpose()?,
             status: row.status.map(decode).transpose()?,
+            presence_preference: decode(row.presence_preference)?,
             about: row.about.map(decode).transpose()?,
             avatar: row.avatar,
             sub_level: row.sub_level,
@@ -154,13 +158,127 @@ pub async fn get_by_user_id(id: UserId) -> Result<User> {
 }
 
 pub async fn get_users_by_iota_id(id: IotaId) -> Result<Vec<User>> {
-    let rows = sqlx::query_as::<_, UserRow>(USERS_BY_IOTA_ID_QUERY)
-        .bind(id.0)
+    get_users_by_iota_ids(&[id.0]).await
+}
+
+fn normalized_ids(ids: &[i64]) -> Vec<i64> {
+    let mut ids = ids
+        .iter()
+        .copied()
+        .filter(|id| valid_protocol_id(*id))
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn append_in_clause(query: &mut QueryBuilder<'_, MySql>, ids: &[i64]) {
+    query.push("(");
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            query.push(", ");
+        }
+        query.push_bind(*id);
+    }
+    query.push(")");
+}
+
+async fn fetch_users(mut query: QueryBuilder<'_, MySql>) -> Result<Vec<User>> {
+    query
+        .build_query_as::<UserRow>()
         .fetch_all(&pool().await?)
-        .await?;
-    rows.into_iter()
+        .await?
+        .into_iter()
         .map(|row| row.try_into().map_err(OmegaError::from))
         .collect()
+}
+
+pub async fn get_users_by_ids(ids: &[i64]) -> Result<Vec<User>> {
+    let ids = normalized_ids(ids);
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<MySql>::new(USER_COLUMNS);
+    query.push(" WHERE id IN ");
+    append_in_clause(&mut query, &ids);
+    fetch_users(query).await
+}
+
+pub async fn get_users_by_iota_ids(ids: &[i64]) -> Result<Vec<User>> {
+    let ids = normalized_ids(ids);
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut query = QueryBuilder::<MySql>::new(USER_COLUMNS);
+    query.push(" WHERE iota_id IN ");
+    append_in_clause(&mut query, &ids);
+    fetch_users(query).await
+}
+
+pub async fn get_users_by_ids_and_iota_ids(
+    user_ids: &[i64],
+    iota_ids: &[i64],
+) -> Result<Vec<User>> {
+    let user_ids = normalized_ids(user_ids);
+    let iota_ids = normalized_ids(iota_ids);
+    if user_ids.is_empty() && iota_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<MySql>::new(USER_COLUMNS);
+    query.push(" WHERE ");
+    if !user_ids.is_empty() {
+        query.push("id IN ");
+        append_in_clause(&mut query, &user_ids);
+    }
+    if !iota_ids.is_empty() {
+        if !user_ids.is_empty() {
+            query.push(" OR ");
+        }
+        query.push("iota_id IN ");
+        append_in_clause(&mut query, &iota_ids);
+    }
+    fetch_users(query).await
+}
+
+#[derive(FromRow)]
+struct PresencePreferenceRow {
+    id: i64,
+    presence_preference: Vec<u8>,
+}
+
+pub async fn get_presence_preferences(ids: &[i64]) -> Result<HashMap<i64, UserStatus>> {
+    let ids = normalized_ids(ids);
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query =
+        QueryBuilder::<MySql>::new("SELECT id, presence_preference FROM users WHERE id IN ");
+    append_in_clause(&mut query, &ids);
+    let rows = query
+        .build_query_as::<PresencePreferenceRow>()
+        .fetch_all(&pool().await?)
+        .await?;
+    let mut preferences = HashMap::with_capacity(rows.len());
+    for row in rows {
+        let status = String::from_utf8(row.presence_preference)
+            .ok()
+            .and_then(|value| UserStatus::from_client_preference(&value));
+        let status = match status {
+            Some(status) => status,
+            None => {
+                crate::log_in!(
+                    crate::util::logger::PrintType::General,
+                    "Invalid persisted presence preference for user {}, using user_online",
+                    row.id
+                );
+                UserStatus::user_online
+            }
+        };
+        preferences.insert(row.id, status);
+    }
+    Ok(preferences)
 }
 
 async fn update(
@@ -212,6 +330,15 @@ pub async fn change_status(id: UserId, value: String) -> Result<()> {
     update(
         id,
         "UPDATE users SET status = ? WHERE id = ?",
+        value.into_bytes(),
+    )
+    .await
+}
+
+pub async fn change_presence_preference(id: UserId, value: String) -> Result<()> {
+    update(
+        id,
+        "UPDATE users SET presence_preference = ? WHERE id = ?",
         value.into_bytes(),
     )
     .await

@@ -1,6 +1,8 @@
+use super::capabilities::{OmegaCapabilities, PeerCapabilities};
 use crate::models::OmikronId;
 use crate::{
     load_keyring, log, log_cv_in, log_cv_out, log_err, log_in, server,
+    state::OmegaState,
     transport::omikron_manager,
     util::{file_util::load_file_vec, logger::PrintType},
 };
@@ -48,9 +50,11 @@ pub struct WaitingTask {
 
 pub struct OmikronConnection {
     id: u64,
+    state: Arc<OmegaState>,
     sender: Mutex<Option<WebMtpSender>>,
     waiting_tasks: DashMap<u32, WaitingTask>,
     cleanup_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    peer_capabilities: PeerCapabilities,
 }
 impl Drop for OmikronConnection {
     fn drop(&mut self) {
@@ -61,13 +65,26 @@ impl Drop for OmikronConnection {
 }
 
 impl OmikronConnection {
-    pub fn new(sender: WebMtpSender, id: u64) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(
+        sender: WebMtpSender,
+        id: u64,
+        description: Option<&str>,
+        state: Arc<OmegaState>,
+    ) -> Option<Arc<Self>> {
+        let peer_capabilities =
+            PeerCapabilities::from_identification_description(description).ok()?;
+        Some(Arc::new(Self {
             id,
+            state,
             sender: Mutex::new(Some(sender)),
             waiting_tasks: DashMap::new(),
             cleanup_handle: std::sync::Mutex::new(None),
-        })
+            peer_capabilities,
+        }))
+    }
+
+    pub fn peer_capabilities(&self) -> &PeerCapabilities {
+        &self.peer_capabilities
     }
 
     pub async fn handle(self: Arc<Self>, receiver: &mut WebMtpReceiver) {
@@ -76,6 +93,23 @@ impl OmikronConnection {
             PrintType::Omega,
             "Omikron connection started"
         );
+        let capabilities = CommunicationValue::new(CommunicationType::IdentificationResponse)
+            .add_typed_default(
+                mtp::codec::DataType::Description,
+                mtp::codec::DataValue::Str(
+                    OmegaCapabilities::current().identification_description(),
+                ),
+            );
+        if let Err(error) = self.clone().send(&capabilities).await {
+            log_err!(
+                self.id as i64,
+                PrintType::Omega,
+                "Failed to send Omega capabilities: {}",
+                error
+            );
+            self.clone().cleanup().await;
+            return;
+        }
         let cleanup_conn = self.clone();
         *self.cleanup_handle.lock().unwrap() = Some(tokio::spawn(async move {
             let mut ticker = interval(CLEANUP_INTERVAL);
@@ -132,27 +166,30 @@ impl OmikronConnection {
 
     async fn dispatch(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
         let id = self.id as i64;
+        let state = self.state.clone();
         match value.get_comm_type_enum() {
             Some(CommunicationType::ShortenLink) => {
                 crate::transport::handlers::links::shorten(self, value).await
             }
             Some(CommunicationType::UserConnected) => {
-                crate::transport::handlers::presence::user_connected(self, value, id).await
+                crate::transport::handlers::presence::user_connected(state, self, value, id).await
             }
             Some(CommunicationType::UserDisconnected) => {
-                crate::transport::handlers::presence::user_disconnected(self, value, id).await
+                crate::transport::handlers::presence::user_disconnected(state, self, value, id)
+                    .await
             }
-            Some(CommunicationType::ClientChanged) => {
-                crate::transport::handlers::presence::client_changed(self, value, id).await
+            Some(CommunicationType::SetUserState) => {
+                crate::transport::handlers::presence::set_user_state(state, self, value, id).await
             }
             Some(CommunicationType::IotaConnected) => {
-                crate::transport::handlers::presence::iota_connected(self, value, id).await
+                crate::transport::handlers::presence::iota_connected(state, self, value, id).await
             }
             Some(CommunicationType::IotaDisconnected) => {
-                crate::transport::handlers::presence::iota_disconnected(self, value, id).await
+                crate::transport::handlers::presence::iota_disconnected(state, self, value, id)
+                    .await
             }
             Some(CommunicationType::SyncClientIotaStatus) => {
-                crate::transport::handlers::presence::sync_status(self, value, id).await
+                crate::transport::handlers::presence::sync_status(state, self, value, id).await
             }
             Some(CommunicationType::GetUserData) => {
                 crate::transport::handlers::user_data::get_user(self, value).await
@@ -193,6 +230,13 @@ impl OmikronConnection {
             Some(CommunicationType::GetStates) => {
                 crate::transport::handlers::states::get(self, value).await
             }
+            Some(CommunicationType::StateSubscribe) => {
+                crate::transport::handlers::presence::state_subscribe(state, self, value, id).await
+            }
+            Some(CommunicationType::ClientChanged) => {
+                crate::transport::handlers::presence::client_changed_legacy(state, self, value, id)
+                    .await
+            }
             _ => {
                 log_err!(
                     0,
@@ -216,6 +260,24 @@ impl OmikronConnection {
             .await
             .map_err(|error| crate::error::OmegaError::SendError(error.to_string()))
     }
+
+    pub(crate) async fn send_messages(
+        self: Arc<Self>,
+        values: &[CommunicationValue],
+    ) -> OmikronResult<()> {
+        let guard = self.sender.lock().await;
+        let sender = guard
+            .as_ref()
+            .ok_or(crate::error::OmegaError::NotConnected)?;
+        for value in values {
+            log_cv_out!(PrintType::Omikron, value);
+            sender
+                .send(value)
+                .await
+                .map_err(|error| crate::error::OmegaError::SendError(error.to_string()))?;
+        }
+        Ok(())
+    }
     pub(crate) async fn send_error_response(
         self: Arc<Self>,
         message_id: u32,
@@ -223,6 +285,22 @@ impl OmikronConnection {
     ) -> OmikronResult<()> {
         self.send(&CommunicationValue::new(error_type).with_id(message_id))
             .await
+    }
+    pub(crate) async fn send_error_response_with_detail(
+        self: Arc<Self>,
+        message_id: u32,
+        error_type: CommunicationType,
+        detail: &'static str,
+    ) -> OmikronResult<()> {
+        self.send(
+            &CommunicationValue::new(error_type)
+                .with_id(message_id)
+                .add_typed_default(
+                    mtp::codec::DataType::ErrorType,
+                    mtp::codec::DataValue::Str(detail.to_string()),
+                ),
+        )
+        .await
     }
     pub async fn close(self: Arc<Self>) {
         log_in!(
@@ -238,7 +316,11 @@ impl OmikronConnection {
         if self.id != 0 {
             log_in!(self.id as i64, PrintType::Omega, "Omikron disconnected");
             if omikron_manager::remove_omikron(self.id as i64, &self).await {
-                crate::sql::user_online_tracker::untrack_omikron(self.id as i64).await;
+                crate::transport::handlers::presence::omikron_disconnected(
+                    self.state.clone(),
+                    self.id as i64,
+                )
+                .await;
             }
         }
         if let Some(handle) = self.cleanup_handle.lock().unwrap().take() {
@@ -248,12 +330,19 @@ impl OmikronConnection {
     pub async fn get_omikron_id(self: Arc<Self>) -> Option<i64> {
         Some(self.id as i64)
     }
+    pub fn state(&self) -> Arc<OmegaState> {
+        self.state.clone()
+    }
     pub async fn send_message(self: Arc<Self>, value: &CommunicationValue) -> OmikronResult<()> {
         self.send(value).await
     }
 }
 
-pub async fn get_by_omikron_id(omikron_id: u64, _: Option<String>) -> Option<PublicKeyBundle> {
+pub async fn get_by_omikron_id(
+    omikron_id: u64,
+    description: Option<String>,
+) -> Option<PublicKeyBundle> {
+    PeerCapabilities::from_identification_description(description.as_deref()).ok()?;
     crate::db::omikron_repo::get_omikron_by_id(OmikronId::from(omikron_id as i64))
         .await
         .ok()
@@ -263,7 +352,7 @@ pub async fn complete_register(_: PublicKeyBundle, _: Option<String>) -> u64 {
     0
 }
 
-pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std::error::Error>> {
     let cert_pem = load_file_vec("certs", "cert.pem")?;
     let key_pem = load_file_vec("certs", "key.pem")?;
     let web_config = server::server::build_web_config()?
@@ -331,7 +420,19 @@ pub async fn start(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             );
             continue;
         }
-        let connection = OmikronConnection::new(conn.sender, conn.client_id);
+        let Some(connection) = OmikronConnection::new(
+            conn.sender,
+            conn.client_id,
+            conn.description.as_deref(),
+            state.clone(),
+        ) else {
+            log_err!(
+                0,
+                PrintType::Omega,
+                "Rejected Omikron connection with invalid capabilities"
+            );
+            continue;
+        };
         tokio::spawn(async move {
             let _guard = ConnectionLimitGuard(peer_ip);
             omikron_manager::add_omikron(connection.clone()).await;

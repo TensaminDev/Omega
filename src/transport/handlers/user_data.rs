@@ -2,7 +2,6 @@ use super::super::omikron_connection::{OmikronConnection, OmikronResult};
 use crate::{
     db::{iota_repo, user_repo},
     models::{IotaId, UserId},
-    sql::{connection_status::UserStatus, user_online_tracker},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use mtp::{
@@ -11,9 +10,12 @@ use mtp::{
 };
 use std::sync::Arc;
 
-fn connections(iota_id: i64) -> DataValue {
+fn connections(connection: &OmikronConnection, iota_id: i64) -> DataValue {
     DataValue::Array(
-        user_online_tracker::get_iota_omikron_connections(iota_id)
+        connection
+            .state()
+            .presence
+            .iota_connections(iota_id)
             .unwrap_or_default()
             .into_iter()
             .map(|id| DataValue::SignedNumber(id.into()))
@@ -25,6 +27,7 @@ pub async fn get_user(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    let state = connection.state();
     let user = if let Some(id) = value.get_data(DataType::UserId).as_number() {
         user_repo::get_by_user_id(UserId::from(id as i64))
             .await
@@ -74,28 +77,36 @@ pub async fn get_user(
         response =
             response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(avatar)));
     }
-    let online = user_online_tracker::get_user_status(id);
+    let route = state.presence.user_route(id);
+    let private_request = value.get_sender() as i64 == id;
+    let resolved_status = if private_request {
+        if !state
+            .presence
+            .load_preference(id, &user.presence_preference)
+        {
+            crate::log_in!(
+                crate::util::logger::PrintType::General,
+                "Invalid persisted presence preference for user {}, using user_online",
+                id
+            );
+        }
+        state.presence.resolve_private_state(id)
+    } else {
+        state.presence.resolve_public_state(id, iota_id)
+    };
     response = response
         .add_typed_default(
             DataType::OnlineStatus,
-            DataValue::Str(
-                online
-                    .as_ref()
-                    .map(|status| {
-                        if status.connection_type == UserStatus::user_invisible {
-                            UserStatus::user_offline.to_string()
-                        } else {
-                            status.connection_type.to_string()
-                        }
-                    })
-                    .unwrap_or_else(|| UserStatus::iota_offline.to_string()),
-            ),
+            DataValue::Str(resolved_status.to_string()),
         )
-        .add_typed_default(DataType::OmikronConnections, connections(iota_id));
-    if let Some(status) = online {
+        .add_typed_default(
+            DataType::OmikronConnections,
+            connections(&connection, iota_id),
+        );
+    if let Some(route) = route {
         response = response.add_typed_default(
             DataType::OmikronId,
-            DataValue::SignedNumber(status.omikron_id.into()),
+            DataValue::SignedNumber(route.omikron_id.into()),
         );
     }
     connection.send(&response).await
@@ -147,7 +158,7 @@ pub async fn get_iota(
         .with_id(value.get_id())
         .add_typed_default(DataType::PublicKey, DataValue::Str(key.to_base64()))
         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(id.into()))
-        .add_typed_default(DataType::OmikronConnections, connections(id));
+        .add_typed_default(DataType::OmikronConnections, connections(&connection, id));
     if let Some(user_id) = user_id {
         response =
             response.add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.into()));

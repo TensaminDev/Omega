@@ -5,12 +5,14 @@ pub mod error;
 mod models;
 mod server;
 mod sql;
+mod state;
 mod transport;
 mod util;
 
 pub use error::{OmegaError, Result};
 
 use crate::db::initialize;
+use crate::state::OmegaState;
 use crate::transport::omikron_connection;
 use crate::util::file_util::get_directory;
 use crate::util::logger::PrintType;
@@ -94,7 +96,7 @@ async fn main() {
         .unwrap_or(443);
 
     tokio::select! {
-        result = omikron_connection::start(port) => {
+        result = omikron_connection::start(port, OmegaState::new()) => {
             if let Err(e) = result {
                 log_err!(0, PrintType::General, "Server error: {:?}", e);
             }

@@ -1,4 +1,7 @@
+use crate::db::user_repo;
+use crate::state::OmegaState;
 use crate::transport::connection::OmikronConnection;
+use crate::transport::omikron_connection::OmikronResult;
 use dashmap::DashMap;
 use mtp::codec::CommunicationValue;
 use once_cell::sync::Lazy;
@@ -34,6 +37,61 @@ pub fn get_connected_omikron(omikron_id: i64) -> Option<Arc<OmikronConnection>> 
         .map(|connection| connection.clone())
 }
 
+pub fn get_state() -> Option<Arc<OmegaState>> {
+    OMIKRON_CONNECTIONS
+        .iter()
+        .next()
+        .map(|connection| connection.value().state())
+}
+
+pub fn get_iota_primary_omikron_connection(iota_id: i64) -> Option<i64> {
+    get_state().and_then(|state| state.presence.primary_iota_route(iota_id))
+}
+
+pub async fn get_all_connections()
+-> Result<std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>>, ()> {
+    match get_state() {
+        Some(state) => {
+            let mut result = state.presence.connection_routes();
+            let iota_ids = state
+                .presence
+                .all_iota_routes()
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            let users = user_repo::get_users_by_iota_ids(&iota_ids)
+                .await
+                .map_err(|_| ())?;
+            for user in users {
+                for route in state.presence.routes_for_user(user.id.0) {
+                    if let Some(iotas) = result.get_mut(&route.omikron_id) {
+                        if let Some(users) = iotas.get_mut(&user.iota_id.0) {
+                            users.push(user.id.0);
+                        }
+                    }
+                }
+            }
+            for iotas in result.values_mut() {
+                for users in iotas.values_mut() {
+                    users.sort_unstable();
+                    users.dedup();
+                }
+            }
+            Ok(result)
+        }
+        None => Ok(std::collections::HashMap::new()),
+    }
+}
+
+pub async fn send_state_batch(
+    omikron_id: i64,
+    notifications: Vec<CommunicationValue>,
+) -> OmikronResult<()> {
+    let connection =
+        get_connected_omikron(omikron_id).ok_or(crate::error::OmegaError::NotConnected)?;
+    connection.send_messages(&notifications).await
+}
+
 pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
     let keys: Vec<_> = OMIKRON_CONNECTIONS.iter().map(|e| *e.key()).collect();
 
@@ -47,9 +105,11 @@ pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
 }
 
 pub async fn send_to_user(user_id: i64, cv: &CommunicationValue) {
-    if let Some(user_conn) = crate::sql::user_online_tracker::get_user_status(user_id) {
-        if let Some(omikron_conn) = OMIKRON_CONNECTIONS.get(&user_conn.omikron_id) {
-            let _ = omikron_conn.value().clone().send_message(cv).await;
+    if let Some(state) = get_state() {
+        for user_route in state.presence.routes_for_user(user_id) {
+            if let Some(omikron_conn) = OMIKRON_CONNECTIONS.get(&user_route.omikron_id) {
+                let _ = omikron_conn.value().clone().send_message(cv).await;
+            }
         }
     }
 }
