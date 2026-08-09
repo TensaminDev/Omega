@@ -110,7 +110,7 @@ pub async fn get(
         };
         let status = state
             .presence
-            .resolve_public_state(user_id, user.iota_id.0)
+            .resolve_public_state(user_id, user.iota_id.map(|id| id.0).unwrap_or_default())
             .to_string();
         let mut map = Vec::new();
         if let Some(kind) = DataType::UserId.try_to_id(&tm) {

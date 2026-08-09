@@ -87,6 +87,7 @@ impl OmikronConnection {
         &self.peer_capabilities
     }
 
+
     pub async fn handle(self: Arc<Self>, receiver: &mut WebMtpReceiver) {
         log_in!(
             self.id as i64,
@@ -214,6 +215,24 @@ impl OmikronConnection {
             }
             Some(CommunicationType::DeleteUser) => {
                 crate::transport::handlers::account::user(self, value).await
+            }
+            Some(CommunicationType::AttachUserBegin) => {
+                crate::transport::handlers::account::attach_begin(self, value).await
+            }
+            Some(CommunicationType::AttachUserComplete) => {
+                crate::transport::handlers::account::attach_complete(self, value).await
+            }
+            Some(CommunicationType::DeleteUserCredentialBegin) => {
+                crate::transport::handlers::account::delete_credential_begin(self, value).await
+            }
+            Some(CommunicationType::DeleteUserCredentialComplete) => {
+                crate::transport::handlers::account::delete_credential_complete(self, value).await
+            }
+            Some(CommunicationType::EraseHostedUserDataAck) => {
+                crate::transport::handlers::account::erase_hosted_user_data_ack(self, value).await
+            }
+            Some(CommunicationType::ReleaseUserFromIota) => {
+                crate::transport::handlers::account::release_from_iota(self, value).await
             }
             Some(CommunicationType::DeleteIota) => {
                 crate::transport::handlers::account::iota(self, value).await

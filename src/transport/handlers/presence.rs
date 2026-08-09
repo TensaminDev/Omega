@@ -53,7 +53,7 @@ fn states_for_users(state: &OmegaState, users: &[crate::models::User]) -> HashMa
                 user.id.0,
                 state
                     .presence
-                    .resolve_public_state(user.id.0, user.iota_id.0),
+                    .resolve_public_state(user.id.0, user.iota_id.map(|id| id.0).unwrap_or_default()),
             )
         })
         .collect()
@@ -69,7 +69,7 @@ fn changed_states(
         .filter_map(|user| {
             let after = state
                 .presence
-                .resolve_public_state(user.id.0, user.iota_id.0);
+                .resolve_public_state(user.id.0, user.iota_id.map(|id| id.0).unwrap_or_default());
             (before.get(&user.id.0) != Some(&after)).then_some((user.id.0, after))
         })
         .collect::<Vec<_>>();
@@ -275,7 +275,7 @@ pub async fn user_connected(
         Ok(preferences) => preferences,
         Err(error) => return Err(error.into()),
     };
-    if user.iota_id.0 != iota_id || !state.presence.has_iota_route(iota_id) {
+    if user.iota_id.map(|id| id.0) != Some(iota_id) || !state.presence.has_iota_route(iota_id) {
         return connection
             .send_error_response(value.get_id(), CommunicationType::ErrorNoIota)
             .await;
@@ -497,6 +497,7 @@ pub async fn iota_connected(
         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
         .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
     connection.clone().send(&response).await?;
+    crate::transport::omikron_manager::deliver_pending_erasures(iota_id).await;
     publish_changed_states(&state, &before, &users).await;
     connection
         .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))

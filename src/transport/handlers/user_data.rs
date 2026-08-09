@@ -43,7 +43,7 @@ pub async fn get_user(
             .await;
     };
     let id = user.id.0;
-    let iota_id = user.iota_id.0;
+    let iota_id = user.iota_id.map(|id| id.0);
     let username = user.username.clone();
     let display = user
         .display
@@ -57,7 +57,6 @@ pub async fn get_user(
             DataValue::Str(user.public_key.to_base64()),
         )
         .add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()))
-        .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
         .add_typed_default(DataType::Display, DataValue::Str(display))
         .add_typed_default(
             DataType::SubLevel,
@@ -92,7 +91,7 @@ pub async fn get_user(
         }
         state.presence.resolve_private_state(id)
     } else {
-        state.presence.resolve_public_state(id, iota_id)
+        iota_id.map(|iota_id| state.presence.resolve_public_state(id, iota_id)).unwrap_or(crate::sql::connection_status::UserStatus::user_offline)
     };
     response = response
         .add_typed_default(
@@ -101,8 +100,11 @@ pub async fn get_user(
         )
         .add_typed_default(
             DataType::OmikronConnections,
-            connections(&connection, iota_id),
+            iota_id.map(|iota_id| connections(&connection, iota_id)).unwrap_or_else(|| DataValue::Array(Vec::new())),
         );
+    if let Some(iota_id) = iota_id {
+        response = response.add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
+    }
     if let Some(route) = route {
         response = response.add_typed_default(
             DataType::OmikronId,
@@ -123,26 +125,25 @@ pub async fn get_iota(
             .map(|iota| (iota.id.0, iota.public_key, None, None))
     } else if let Some(id) = value.get_data(DataType::UserId).as_number() {
         if let Ok(user) = user_repo::get_by_user_id(UserId::from(id as i64)).await {
-            iota_repo::get_iota_by_id(user.iota_id)
-                .await
-                .ok()
-                .map(|iota| (iota.id.0, iota.public_key, Some(user.id.0), None))
+            match user.iota_id {
+                Some(iota_id) => iota_repo::get_iota_by_id(iota_id)
+                    .await
+                    .ok()
+                    .map(|iota| (iota.id.0, iota.public_key, Some(user.id.0), None)),
+                None => None,
+            }
         } else {
             None
         }
     } else if let Some(name) = value.get_data(DataType::Username).as_str() {
         if let Ok(user) = user_repo::get_by_username(name).await {
-            iota_repo::get_iota_by_id(user.iota_id)
-                .await
-                .ok()
-                .map(|iota| {
-                    (
-                        iota.id.0,
-                        iota.public_key,
-                        Some(user.id.0),
-                        Some(name.to_owned()),
-                    )
-                })
+            match user.iota_id {
+                Some(iota_id) => iota_repo::get_iota_by_id(iota_id)
+                    .await
+                    .ok()
+                    .map(|iota| (iota.id.0, iota.public_key, Some(user.id.0), Some(name.to_owned()))),
+                None => None,
+            }
         } else {
             None
         }
@@ -269,7 +270,7 @@ pub async fn change_iota(
             .await;
     }
     let result =
-        match user_repo::change_iota_id(user_id, IotaId::from(value.get_sender() as i64)).await {
+        match user_repo::change_iota_id(user_id, Some(IotaId::from(value.get_sender() as i64))).await {
             Ok(()) => user_repo::change_token(user_id, new_token.to_owned()).await,
             Err(error) => Err(error),
         };

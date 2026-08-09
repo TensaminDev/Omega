@@ -28,7 +28,7 @@ pub struct UserResponse {
     pub username: String,
     pub public_key: String,
     pub user_id: i64,
-    pub iota_id: i64,
+    pub iota_id: Option<i64>,
     pub sub_level: i32,
     pub sub_end: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -47,7 +47,7 @@ pub struct UsernameResponse {
     pub username: String,
     pub public_key: String,
     pub user_id: i64,
-    pub iota_id: i64,
+    pub iota_id: Option<i64>,
     pub sub_level: i32,
     pub sub_end: i64,
 }

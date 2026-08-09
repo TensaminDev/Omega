@@ -4,7 +4,7 @@ use mtp::crypto::PublicKeyBundle;
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct User {
     pub id: UserId,
-    pub iota_id: IotaId,
+    pub iota_id: Option<IotaId>,
     pub username: String,
     pub display: Option<String>,
     pub status: Option<String>,

@@ -101,7 +101,7 @@ const USER_COLUMNS: &str = "SELECT id, iota_id, username, display, status, prese
 #[derive(FromRow)]
 struct UserRow {
     id: i64,
-    iota_id: i64,
+    iota_id: Option<i64>,
     username: Vec<u8>,
     display: Option<Vec<u8>>,
     status: Option<Vec<u8>>,
@@ -124,7 +124,7 @@ impl TryFrom<UserRow> for User {
             |value| String::from_utf8(value).map_err(|error| sqlx::Error::Decode(Box::new(error)));
         Ok(User {
             id: row.id.into(),
-            iota_id: row.iota_id.into(),
+            iota_id: row.iota_id.map(IotaId::from),
             username: decode(row.username)?,
             display: row.display.map(decode).transpose()?,
             status: row.status.map(decode).transpose()?,
@@ -344,9 +344,9 @@ pub async fn change_presence_preference(id: UserId, value: String) -> Result<()>
     .await
 }
 
-pub async fn change_iota_id(id: UserId, value: IotaId) -> Result<()> {
+pub async fn change_iota_id(id: UserId, value: Option<IotaId>) -> Result<()> {
     sqlx::query("UPDATE users SET iota_id = ? WHERE id = ?")
-        .bind(value.0)
+        .bind(value.map(|id| id.0))
         .bind(id.0)
         .execute(&pool().await?)
         .await?;
@@ -366,6 +366,42 @@ pub async fn delete_user(id: UserId) -> Result<()> {
         .execute(&pool().await?)
         .await?;
     Ok(())
+}
+
+/// Delete the central identity while retaining a durable instruction for the
+/// last hosting Iota. The pending row is intentionally independent of users:
+/// it must outlive the account row.
+pub async fn delete_user_with_pending_erasure(id: UserId) -> Result<Option<IotaId>> {
+    let mut tx = pool().await?.begin().await?;
+    let row = sqlx::query("SELECT iota_id FROM users WHERE id = ? FOR UPDATE")
+        .bind(id.0)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(OmegaError::NotFound)?;
+    let iota_id: Option<i64> = row.get("iota_id");
+    if let Some(iota_id) = iota_id {
+        sqlx::query("INSERT IGNORE INTO pending_iota_user_erasure (user_id, iota_id) VALUES (?, ?)")
+            .bind(id.0)
+            .bind(iota_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("DELETE FROM registration_leases WHERE user_id = ?").bind(id.0).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM users WHERE id = ?").bind(id.0).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(iota_id.map(IotaId::from))
+}
+
+pub async fn pending_erasures_for_iota(iota_id: IotaId) -> Result<Vec<UserId>> {
+    let rows = sqlx::query("SELECT user_id FROM pending_iota_user_erasure WHERE iota_id = ?")
+        .bind(iota_id.0).fetch_all(&pool().await?).await?;
+    Ok(rows.into_iter().map(|row| UserId::from(row.get::<i64, _>("user_id"))).collect())
+}
+
+pub async fn acknowledge_pending_erasure(user_id: UserId, iota_id: IotaId) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM pending_iota_user_erasure WHERE user_id = ? AND iota_id = ?")
+        .bind(user_id.0).bind(iota_id.0).execute(&pool().await?).await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn change_keys(id: UserId, public_key: PublicKeyBundle) -> Result<()> {
@@ -438,7 +474,7 @@ pub async fn register_complete_user(
                 .map_err(OmegaError::from)?
             {
                 Some(existing)
-                    if existing.iota_id == iota_id
+                    if existing.iota_id == Some(iota_id)
                         && existing.username == username
                         && existing.public_key.as_bytes() == public_key.as_bytes()
                         && existing.token == token =>

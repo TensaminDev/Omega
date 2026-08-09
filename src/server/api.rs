@@ -41,7 +41,7 @@ fn user_response(user: crate::models::User) -> UserResponse {
         username: user.username,
         public_key: user.public_key.to_base64(),
         user_id: user.id.0,
-        iota_id: user.iota_id.0,
+        iota_id: user.iota_id.map(|id| id.0),
         sub_level: user.sub_level,
         sub_end: user.sub_end,
         display: user.display,
@@ -83,7 +83,15 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 omikron_id
             } else {
                 let user = get_by_user_id(UserId::from(id)).await?;
-                get_iota_primary_omikron_connection(user.iota_id.0).ok_or(OmegaError::NotFound)?
+                match user.iota_id {
+                    Some(iota_id) => get_iota_primary_omikron_connection(iota_id.0),
+                    None => get_random_omikron()
+                        .await
+                        .map_err(|_| OmegaError::NotFound)?
+                        .get_omikron_id()
+                        .await,
+                }
+                .ok_or(OmegaError::NotFound)?
             };
 
             // Database rows describe registered Omikrons. The public discovery
@@ -150,7 +158,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                     username: user.username,
                     public_key: user.public_key.to_base64(),
                     user_id: user.id.0,
-                    iota_id: user.iota_id.0,
+                    iota_id: user.iota_id.map(|id| id.0),
                     sub_level: user.sub_level,
                     sub_end: user.sub_end,
                 }),
