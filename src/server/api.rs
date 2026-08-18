@@ -85,11 +85,13 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 let user = get_by_user_id(UserId::from(id)).await?;
                 match user.iota_id {
                     Some(iota_id) => get_iota_primary_omikron_connection(iota_id.0),
-                    None => get_random_omikron()
-                        .await
-                        .map_err(|_| OmegaError::NotFound)?
-                        .get_omikron_id()
-                        .await,
+                    None => {
+                        get_random_omikron()
+                            .await
+                            .map_err(|_| OmegaError::NotFound)?
+                            .get_omikron_id()
+                            .await
+                    }
                 }
                 .ok_or(OmegaError::NotFound)?
             };

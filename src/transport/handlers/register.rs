@@ -1,4 +1,6 @@
-use super::super::omikron_connection::{OmikronConnection, OmikronResult};
+use super::super::connection::{
+    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+};
 use crate::{
     db::{iota_repo, user_repo},
     models::{IotaId, UserId},

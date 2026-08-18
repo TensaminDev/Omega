@@ -1,10 +1,13 @@
 use crate::sql::user_online_tracker::PresenceTracker;
-use std::sync::Arc;
 use dashmap::DashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum AccountChallengeOperation { Attach, Delete }
+pub enum AccountChallengeOperation {
+    Attach,
+    Delete,
+}
 
 #[derive(Clone, Debug)]
 pub struct AccountChallenge {
@@ -30,15 +33,38 @@ impl Default for OmegaState {
 }
 
 impl OmegaState {
-    pub fn issue_challenge(&self, operation: AccountChallengeOperation, user_id: i64, requester_iota_id: i64) -> u64 {
+    pub fn issue_challenge(
+        &self,
+        operation: AccountChallengeOperation,
+        user_id: i64,
+        requester_iota_id: i64,
+    ) -> u64 {
         let nonce = rand::random::<u64>();
-        self.challenges.insert((operation, user_id, requester_iota_id), AccountChallenge { operation, user_id, requester_iota_id, nonce, created_at: Instant::now() });
+        self.challenges.insert(
+            (operation, user_id, requester_iota_id),
+            AccountChallenge {
+                operation,
+                user_id,
+                requester_iota_id,
+                nonce,
+                created_at: Instant::now(),
+            },
+        );
         nonce
     }
 
-    pub fn consume_challenge(&self, operation: AccountChallengeOperation, user_id: i64, requester_iota_id: i64, nonce: u64) -> bool {
-        self.challenges.remove(&(operation, user_id, requester_iota_id)).is_some_and(|(_, value)|
-            value.nonce == nonce && value.created_at.elapsed() <= Duration::from_secs(120))
+    pub fn consume_challenge(
+        &self,
+        operation: AccountChallengeOperation,
+        user_id: i64,
+        requester_iota_id: i64,
+        nonce: u64,
+    ) -> bool {
+        self.challenges
+            .remove(&(operation, user_id, requester_iota_id))
+            .is_some_and(|(_, value)| {
+                value.nonce == nonce && value.created_at.elapsed() <= Duration::from_secs(120)
+            })
     }
 }
 

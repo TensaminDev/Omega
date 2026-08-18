@@ -1,4 +1,6 @@
-use super::super::omikron_connection::{OmikronConnection, OmikronResult};
+use super::super::connection::{
+    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+};
 use crate::{
     db::{iota_repo, user_repo},
     models::{IotaId, UserId},
@@ -91,7 +93,9 @@ pub async fn get_user(
         }
         state.presence.resolve_private_state(id)
     } else {
-        iota_id.map(|iota_id| state.presence.resolve_public_state(id, iota_id)).unwrap_or(crate::sql::connection_status::UserStatus::user_offline)
+        iota_id
+            .map(|iota_id| state.presence.resolve_public_state(id, iota_id))
+            .unwrap_or(crate::sql::connection_status::UserStatus::user_offline)
     };
     response = response
         .add_typed_default(
@@ -100,10 +104,13 @@ pub async fn get_user(
         )
         .add_typed_default(
             DataType::OmikronConnections,
-            iota_id.map(|iota_id| connections(&connection, iota_id)).unwrap_or_else(|| DataValue::Array(Vec::new())),
+            iota_id
+                .map(|iota_id| connections(&connection, iota_id))
+                .unwrap_or_else(|| DataValue::Array(Vec::new())),
         );
     if let Some(iota_id) = iota_id {
-        response = response.add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
+        response =
+            response.add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
     }
     if let Some(route) = route {
         response = response.add_typed_default(
@@ -138,10 +145,14 @@ pub async fn get_iota(
     } else if let Some(name) = value.get_data(DataType::Username).as_str() {
         if let Ok(user) = user_repo::get_by_username(name).await {
             match user.iota_id {
-                Some(iota_id) => iota_repo::get_iota_by_id(iota_id)
-                    .await
-                    .ok()
-                    .map(|iota| (iota.id.0, iota.public_key, Some(user.id.0), Some(name.to_owned()))),
+                Some(iota_id) => iota_repo::get_iota_by_id(iota_id).await.ok().map(|iota| {
+                    (
+                        iota.id.0,
+                        iota.public_key,
+                        Some(user.id.0),
+                        Some(name.to_owned()),
+                    )
+                }),
                 None => None,
             }
         } else {
@@ -245,12 +256,14 @@ pub async fn change_iota(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    let Some(reset) = value.get_data(DataType::ResetToken).as_str() else {
+    let reset_data = value.get_data(DataType::ResetToken);
+    let Some(reset) = reset_data.as_str() else {
         return connection
             .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
             .await;
     };
-    let Some(new_token) = value.get_data(DataType::NewToken).as_str() else {
+    let new_token_data = value.get_data(DataType::NewToken);
+    let Some(new_token) = new_token_data.as_str() else {
         return connection
             .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
             .await;
@@ -270,7 +283,9 @@ pub async fn change_iota(
             .await;
     }
     let result =
-        match user_repo::change_iota_id(user_id, Some(IotaId::from(value.get_sender() as i64))).await {
+        match user_repo::change_iota_id(user_id, Some(IotaId::from(value.get_sender() as i64)))
+            .await
+        {
             Ok(()) => user_repo::change_token(user_id, new_token.to_owned()).await,
             Err(error) => Err(error),
         };

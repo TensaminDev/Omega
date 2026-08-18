@@ -1,4 +1,6 @@
-use super::super::omikron_connection::{OmikronConnection, OmikronResult};
+use super::super::connection::{
+    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+};
 use crate::{
     db::user_repo, log_in, models::IotaId, sql::connection_status::UserStatus, state::OmegaState,
 };
@@ -19,7 +21,7 @@ fn parse_subscription(value: &CommunicationValue) -> Result<(i64, i64, Vec<i64>)
         .and_then(|id| i64::try_from(id).ok())
         .filter(|id| *id > 0)
         .ok_or("session_id")?;
-    let DataValue::Array(values) = value.get_data(DataType::UserIds) else {
+    let Some(DataValue::Array(values)) = value.get_data(DataType::UserIds) else {
         return Err("user_ids");
     };
 
@@ -51,9 +53,10 @@ fn states_for_users(state: &OmegaState, users: &[crate::models::User]) -> HashMa
         .map(|user| {
             (
                 user.id.0,
-                state
-                    .presence
-                    .resolve_public_state(user.id.0, user.iota_id.map(|id| id.0).unwrap_or_default()),
+                state.presence.resolve_public_state(
+                    user.id.0,
+                    user.iota_id.map(|id| id.0).unwrap_or_default(),
+                ),
             )
         })
         .collect()
@@ -349,7 +352,7 @@ pub async fn set_user_state(
             .send_error_response(value.get_id(), CommunicationType::ErrorNoUserId)
             .await;
     };
-    if let Some(requested_user) = value.get_data_opt(DataType::UserId) {
+    if let Some(requested_user) = value.get_data(DataType::UserId) {
         let Some(requested_user_id) = requested_user
             .as_number()
             .and_then(|id| i64::try_from(id).ok())
@@ -538,12 +541,12 @@ pub async fn sync_status(
     omikron_id: i64,
 ) -> OmikronResult<()> {
     let request_id = value.get_id();
-    let DataValue::Array(iota_values) = value.get_data(DataType::IotaIds) else {
+    let Some(DataValue::Array(iota_values)) = value.get_data(DataType::IotaIds) else {
         return connection
             .send_error_response(request_id, CommunicationType::ErrorInvalidData)
             .await;
     };
-    let DataValue::Array(session_values) = value.get_data(DataType::UserStates) else {
+    let Some(DataValue::Array(session_values)) = value.get_data(DataType::UserStates) else {
         return connection
             .send_error_response(request_id, CommunicationType::ErrorInvalidData)
             .await;
@@ -572,7 +575,7 @@ pub async fn sync_status(
     }
 
     if !connection.peer_capabilities().session_snapshot_v1 {
-        let DataValue::Array(user_values) = value.get_data(DataType::UserIds) else {
+        let Some(DataValue::Array(user_values)) = value.get_data(DataType::UserIds) else {
             return connection
                 .send_error_response(request_id, CommunicationType::ErrorInvalidData)
                 .await;

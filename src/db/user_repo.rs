@@ -380,27 +380,44 @@ pub async fn delete_user_with_pending_erasure(id: UserId) -> Result<Option<IotaI
         .ok_or(OmegaError::NotFound)?;
     let iota_id: Option<i64> = row.get("iota_id");
     if let Some(iota_id) = iota_id {
-        sqlx::query("INSERT IGNORE INTO pending_iota_user_erasure (user_id, iota_id) VALUES (?, ?)")
-            .bind(id.0)
-            .bind(iota_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT IGNORE INTO pending_iota_user_erasure (user_id, iota_id) VALUES (?, ?)",
+        )
+        .bind(id.0)
+        .bind(iota_id)
+        .execute(&mut *tx)
+        .await?;
     }
-    sqlx::query("DELETE FROM registration_leases WHERE user_id = ?").bind(id.0).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM users WHERE id = ?").bind(id.0).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM registration_leases WHERE user_id = ?")
+        .bind(id.0)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(id.0)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(iota_id.map(IotaId::from))
 }
 
 pub async fn pending_erasures_for_iota(iota_id: IotaId) -> Result<Vec<UserId>> {
     let rows = sqlx::query("SELECT user_id FROM pending_iota_user_erasure WHERE iota_id = ?")
-        .bind(iota_id.0).fetch_all(&pool().await?).await?;
-    Ok(rows.into_iter().map(|row| UserId::from(row.get::<i64, _>("user_id"))).collect())
+        .bind(iota_id.0)
+        .fetch_all(&pool().await?)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| UserId::from(row.get::<i64, _>("user_id")))
+        .collect())
 }
 
 pub async fn acknowledge_pending_erasure(user_id: UserId, iota_id: IotaId) -> Result<bool> {
-    let result = sqlx::query("DELETE FROM pending_iota_user_erasure WHERE user_id = ? AND iota_id = ?")
-        .bind(user_id.0).bind(iota_id.0).execute(&pool().await?).await?;
+    let result =
+        sqlx::query("DELETE FROM pending_iota_user_erasure WHERE user_id = ? AND iota_id = ?")
+            .bind(user_id.0)
+            .bind(iota_id.0)
+            .execute(&pool().await?)
+            .await?;
     Ok(result.rows_affected() == 1)
 }
 

@@ -66,7 +66,8 @@ pub async fn get_all_connections()
                 for route in state.presence.routes_for_user(user.id.0) {
                     if let Some(iotas) = result.get_mut(&route.omikron_id) {
                         if let Some(iota_id) = user.iota_id
-                            && let Some(users) = iotas.get_mut(&iota_id.0) {
+                            && let Some(users) = iotas.get_mut(&iota_id.0)
+                        {
                             users.push(user.id.0);
                         }
                     }
@@ -118,10 +119,20 @@ pub async fn send_to_user(user_id: i64, cv: &CommunicationValue) {
 /// Publish the authoritative membership list after an attach, migration, or
 /// release. Omikron replaces its full local index from this snapshot.
 pub async fn publish_iota_user_snapshot(iota_id: i64) {
-    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else { return; };
-    let Some(connection) = get_connected_omikron(omikron_id) else { return; };
-    let Ok(users) = user_repo::get_users_by_iota_id(crate::models::IotaId::from(iota_id)).await else { return; };
-    let user_ids = users.into_iter().map(|user| DataValue::SignedNumber(user.id.0.into())).collect();
+    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else {
+        return;
+    };
+    let Some(connection) = get_connected_omikron(omikron_id) else {
+        return;
+    };
+    let Ok(users) = user_repo::get_users_by_iota_id(crate::models::IotaId::from(iota_id)).await
+    else {
+        return;
+    };
+    let user_ids = users
+        .into_iter()
+        .map(|user| DataValue::SignedNumber(user.id.0.into()))
+        .collect();
     let snapshot = CommunicationValue::new(CommunicationType::IotaUserData)
         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
         .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
@@ -129,9 +140,17 @@ pub async fn publish_iota_user_snapshot(iota_id: i64) {
 }
 
 pub async fn deliver_pending_erasures(iota_id: i64) {
-    let Ok(users) = user_repo::pending_erasures_for_iota(crate::models::IotaId::from(iota_id)).await else { return; };
-    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else { return; };
-    let Some(connection) = get_connected_omikron(omikron_id) else { return; };
+    let Ok(users) =
+        user_repo::pending_erasures_for_iota(crate::models::IotaId::from(iota_id)).await
+    else {
+        return;
+    };
+    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else {
+        return;
+    };
+    let Some(connection) = get_connected_omikron(omikron_id) else {
+        return;
+    };
     for user_id in users {
         let request = CommunicationValue::new(CommunicationType::EraseHostedUserData)
             .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.0.into()))

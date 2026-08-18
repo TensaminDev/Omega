@@ -1,4 +1,6 @@
-use super::super::omikron_connection::{OmikronConnection, OmikronResult};
+use super::super::connection::{
+    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+};
 use crate::db::user_repo;
 use mtp::{
     codec::{CommunicationType, CommunicationValue, DataType, DataValue},
@@ -29,7 +31,7 @@ pub async fn get(
 ) -> OmikronResult<()> {
     let state = connection.state();
     let legacy_peer = !connection.peer_capabilities().client_state_push_v1;
-    let DataValue::Array(ids) = value.get_data(DataType::UserIds) else {
+    let Some(DataValue::Array(ids)) = value.get_data(DataType::UserIds) else {
         return send_error(
             connection,
             value.get_id(),

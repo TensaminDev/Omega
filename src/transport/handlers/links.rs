@@ -1,4 +1,6 @@
-use super::super::omikron_connection::{OmikronConnection, OmikronResult};
+use super::super::connection::{
+    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+};
 use crate::server::short_link::add_short_link;
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 use std::sync::Arc;
@@ -7,8 +9,8 @@ pub async fn shorten(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    let link = value
-        .get_data(DataType::Link)
+    let link_data = value.get_data(DataType::Link);
+    let link = link_data
         .as_str()
         .ok_or(crate::error::OmegaError::InvalidResponse)?;
     let short = add_short_link(link)

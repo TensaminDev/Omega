@@ -10,6 +10,7 @@ use std::{
 use ansi_term::Color;
 use mtp::codec::{CommunicationValue, DataTypeId, DataValue, Version};
 
+use crate::transport::connection::MtpValueCompat;
 use crate::util::file_util::get_directory;
 
 static LOGGER: OnceLock<mpsc::Sender<LogMessage>> = OnceLock::new();
@@ -250,11 +251,11 @@ pub fn format_cv(cv: &CommunicationValue) -> String {
         .unwrap_or_else(|| cv.get_type().to_string());
     parts.push(format!("{} (id={})", comm_type, cv.get_id()));
 
-    let data = cv.data();
+    let data = cv.data().unwrap_or(&[]);
 
     let formated_data = format_data_container(
         data.iter().map(|(k, v)| (*k, v.clone())).collect(),
-        Version(1, 0),
+        Version(3, 0),
     );
 
     parts.push(format!("{}", formated_data));

@@ -1044,20 +1044,24 @@ mod tests {
         assert_eq!(tracker.subscribers(22).len(), 1);
         tracker.remove_session(7, 3, 42);
         assert!(tracker.check_index_consistency().is_ok());
-        assert!(tracker
-            .routes
-            .read()
-            .unwrap()
-            .indices
-            .sessions_by_user
-            .is_empty());
-        assert!(tracker
-            .routes
-            .read()
-            .unwrap()
-            .indices
-            .targets_by_subscriber
-            .is_empty());
+        assert!(
+            tracker
+                .routes
+                .read()
+                .unwrap()
+                .indices
+                .sessions_by_user
+                .is_empty()
+        );
+        assert!(
+            tracker
+                .routes
+                .read()
+                .unwrap()
+                .indices
+                .targets_by_subscriber
+                .is_empty()
+        );
     }
 
     #[test]

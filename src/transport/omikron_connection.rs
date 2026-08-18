@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use mtp::{
     codec::{CommunicationType, CommunicationValue},
     crypto::PublicKeyBundle,
-    host::{AuthenticationPolicy, HostConfig, Policy, SendMode},
+    host::{AuthState, AuthenticationPolicy, HostConfig, Policy, SendMode},
     webserver::{MTPWebServer, WebMtpReceiver, WebMtpSender},
 };
 use std::{
@@ -21,7 +21,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{sync::Mutex, time::interval};
+use tokio::{
+    sync::{Mutex, mpsc},
+    time::interval,
+};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_WAITING_AGE: Duration = Duration::from_secs(60);
@@ -70,7 +73,11 @@ impl OmikronConnection {
         id: u64,
         description: Option<&str>,
         state: Arc<OmegaState>,
+        authenticated: bool,
     ) -> Option<Arc<Self>> {
+        if !authenticated {
+            return None;
+        }
         let peer_capabilities =
             PeerCapabilities::from_identification_description(description).ok()?;
         Some(Arc::new(Self {
@@ -86,7 +93,6 @@ impl OmikronConnection {
     pub fn peer_capabilities(&self) -> &PeerCapabilities {
         &self.peer_capabilities
     }
-
 
     pub async fn handle(self: Arc<Self>, receiver: &mut WebMtpReceiver) {
         log_in!(
@@ -158,7 +164,12 @@ impl OmikronConnection {
 
     async fn process_message(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
         log_cv_in!(PrintType::Omikron, &value);
-        if let Some((_, task)) = self.waiting_tasks.remove(&value.get_id()) {
+        if value.is_type(CommunicationType::Relay) {
+            return self.dispatch(value).await;
+        }
+        if let Some(message_id) = value.id()
+            && let Some((_, task)) = self.waiting_tasks.remove(&message_id)
+        {
             let _ = (task.task)(self.clone(), value);
             return Ok(());
         }
@@ -168,6 +179,36 @@ impl OmikronConnection {
     async fn dispatch(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
         let id = self.id as i64;
         let state = self.state.clone();
+        if value.is_type(CommunicationType::Relay) {
+            let value = crate::transport::relay_router::ensure_relay_frame_id(value);
+            let request_id = value.id();
+            let result = crate::transport::relay_router::route_from_omikron(id, value).await;
+            let response = match &result {
+                Ok(()) => request_id.map(|request_id| {
+                    CommunicationValue::new(CommunicationType::Success).with_id(request_id)
+                }),
+                Err(error) => {
+                    log_err!(id, PrintType::Omega, "Relay routing failed: {}", error);
+                    request_id.map(|request_id| {
+                        CommunicationValue::new(
+                            crate::transport::relay_router::error_response_type(error),
+                        )
+                        .with_id(request_id)
+                    })
+                }
+            };
+            if let Some(response) = response
+                && let Err(send_error) = self.clone().send(&response).await
+            {
+                log_err!(
+                    id,
+                    PrintType::Omega,
+                    "Relay routing response failed: {}",
+                    send_error
+                );
+            }
+            return result.map_err(|error| crate::error::OmegaError::Transport(error.to_string()));
+        }
         match value.get_comm_type_enum() {
             Some(CommunicationType::ShortenLink) => {
                 crate::transport::handlers::links::shorten(self, value).await
@@ -178,9 +219,6 @@ impl OmikronConnection {
             Some(CommunicationType::UserDisconnected) => {
                 crate::transport::handlers::presence::user_disconnected(state, self, value, id)
                     .await
-            }
-            Some(CommunicationType::SetUserState) => {
-                crate::transport::handlers::presence::set_user_state(state, self, value, id).await
             }
             Some(CommunicationType::IotaConnected) => {
                 crate::transport::handlers::presence::iota_connected(state, self, value, id).await
@@ -296,6 +334,47 @@ impl OmikronConnection {
                 .map_err(|error| crate::error::OmegaError::SendError(error.to_string()))?;
         }
         Ok(())
+    }
+
+    pub(crate) async fn await_response(
+        self: Arc<Self>,
+        value: &CommunicationValue,
+        timeout: Duration,
+    ) -> OmikronResult<CommunicationValue> {
+        let (tx, mut rx) = mpsc::channel(1);
+        let message_id = value.id().unwrap_or_default();
+        let task_tx = tx.clone();
+        self.waiting_tasks.insert(
+            message_id,
+            WaitingTask {
+                task: Box::new(move |_, response| {
+                    let task_tx = task_tx.clone();
+                    tokio::spawn(async move {
+                        let _ = task_tx.send(response).await;
+                    });
+                    true
+                }),
+                inserted_at: Instant::now(),
+            },
+        );
+
+        if let Err(error) = self.clone().send(value).await {
+            self.waiting_tasks.remove(&message_id);
+            return Err(error);
+        }
+
+        match tokio::time::timeout(timeout, rx.recv()).await {
+            Ok(Some(response)) => Ok(response),
+            Ok(None) => Err(crate::error::OmegaError::Transport(
+                "Relay response channel closed".into(),
+            )),
+            Err(_) => {
+                self.waiting_tasks.remove(&message_id);
+                Err(crate::error::OmegaError::Transport(
+                    "Relay response timed out".into(),
+                ))
+            }
+        }
     }
     pub(crate) async fn send_error_response(
         self: Arc<Self>,
@@ -439,16 +518,18 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             );
             continue;
         }
+        let authenticated = matches!(&conn.auth_state, AuthState::Authenticated);
         let Some(connection) = OmikronConnection::new(
             conn.sender,
             conn.client_id,
             conn.description.as_deref(),
             state.clone(),
+            authenticated,
         ) else {
             log_err!(
                 0,
                 PrintType::Omega,
-                "Rejected Omikron connection with invalid capabilities"
+                "Rejected Omikron connection without authenticated transport state or valid capabilities"
             );
             continue;
         };

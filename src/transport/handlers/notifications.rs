@@ -1,4 +1,6 @@
-use super::super::omikron_connection::{OmikronConnection, OmikronResult};
+use super::super::connection::{
+    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+};
 use crate::{db::notification_repo, log, models::UserId};
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 use mtp::type_map::TypeMap;
