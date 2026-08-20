@@ -1,5 +1,5 @@
 use super::super::connection::{
-    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+    OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::server::short_link::add_short_link;
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
@@ -17,7 +17,7 @@ pub async fn shorten(
         .await
         .map_err(|_| crate::error::OmegaError::Transport("short link error".to_string()))?;
     let response = CommunicationValue::new(CommunicationType::ShortenLink)
-        .with_id(value.get_id())
+        .with_id(value.require_id()?)
         .add_typed_default(DataType::Link, DataValue::Str(short));
     connection.send(&response).await
 }

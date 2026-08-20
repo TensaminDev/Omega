@@ -11,7 +11,8 @@ fn serialize_public_key<S>(
 where
     S: serde::Serializer,
 {
-    serializer.serialize_str(&key.to_base64())
+    let encoded = key.try_to_base64().map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(&encoded)
 }
 
 pub use ids::{IotaId, OmikronId, UserId};

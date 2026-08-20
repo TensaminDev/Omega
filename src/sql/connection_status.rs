@@ -12,11 +12,7 @@ pub enum UserStatus {
     iota_online,
     iota_borked,
 }
-#[allow(unused)]
 impl UserStatus {
-    pub fn to_string(&self) -> String {
-        format!("{:?}", self)
-    }
     pub fn from_client_preference(s: &str) -> Option<Self> {
         match s {
             "user_online" => Some(Self::user_online),
@@ -38,8 +34,15 @@ impl UserStatus {
     /// Parse a value received from a client or persisted as an account
     /// preference. Derived connectivity and diagnostic states are never valid
     /// preferences.
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         Self::from_client_preference(s)
+    }
+}
+
+impl std::fmt::Display for UserStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{self:?}")
     }
 }
 

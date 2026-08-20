@@ -1,5 +1,5 @@
 use super::super::connection::{
-    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+    OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::{
     db::{iota_repo, user_repo},
@@ -22,13 +22,13 @@ pub async fn get_register(
         .filter(|id| user_repo::valid_protocol_id(*id));
     let Some(iota_id) = iota_id else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let (register_id, registration_token) =
-        user_repo::allocate_registration(IotaId::from(iota_id), value.get_id()).await?;
+        user_repo::allocate_registration(IotaId::from(iota_id), value.require_id()?).await?;
     let response = CommunicationValue::new(CommunicationType::GetRegister)
-        .with_id(value.get_id())
+        .with_id(value.require_id()?)
         .add_typed_default(
             DataType::UserId,
             DataValue::SignedNumber(register_id.0.into()),
@@ -47,7 +47,7 @@ pub async fn complete_iota(
         .and_then(|key| PublicKeyBundle::from_base64(key).ok());
     let Some(public_key) = public_key else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     match iota_repo::create_new_iota(public_key).await {
@@ -55,7 +55,7 @@ pub async fn complete_iota(
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::CompleteRegisterIota)
-                        .with_id(value.get_id())
+                        .with_id(value.require_id()?)
                         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(id.0.into())),
                 )
                 .await
@@ -64,7 +64,7 @@ pub async fn complete_iota(
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.get_id())
+                        .with_id(value.require_id()?)
                         .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
                 )
                 .await
@@ -108,7 +108,7 @@ pub async fn complete_user(
         })
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     // Omikron supplies the authenticated Iota ID in the payload.  The lease
@@ -120,7 +120,7 @@ pub async fn complete_user(
         .filter(|id| user_repo::valid_protocol_id(*id));
     let Some(iota_id) = iota_id else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
 
@@ -136,14 +136,17 @@ pub async fn complete_user(
     {
         Ok(()) => {
             connection
-                .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+                .send(
+                    &CommunicationValue::new(CommunicationType::Success)
+                        .with_id(value.require_id()?),
+                )
                 .await
         }
         Err(error) => {
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.get_id())
+                        .with_id(value.require_id()?)
                         .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
                 )
                 .await

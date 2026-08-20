@@ -1,13 +1,24 @@
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::net::IpAddr;
-use std::{collections::VecDeque, time::Instant};
+use std::{collections::VecDeque, sync::OnceLock, time::Instant};
 use tokio::time::interval;
 
 static REQUESTS: Lazy<DashMap<(IpAddr, String), VecDeque<Instant>>> = Lazy::new(DashMap::new);
-static CONFIG: Lazy<crate::config::RateLimitConfig> =
-    Lazy::new(crate::config::RateLimitConfig::from_env);
+static CONFIG: OnceLock<crate::config::RateLimitConfig> = OnceLock::new();
 const MAX_TRACKED_CLIENT_BUCKETS: usize = 100_000;
+
+pub(crate) fn initialize_config(
+    config: crate::config::RateLimitConfig,
+) -> Result<(), crate::config::RateLimitConfig> {
+    CONFIG.set(config)
+}
+
+fn config() -> &'static crate::config::RateLimitConfig {
+    static FALLBACK: Lazy<crate::config::RateLimitConfig> =
+        Lazy::new(crate::config::RateLimitConfig::from_env_or_default);
+    CONFIG.get().unwrap_or(&FALLBACK)
+}
 
 pub fn allow(remote_addr: IpAddr, path: &str) -> bool {
     let key = if path.contains("register") {
@@ -23,15 +34,15 @@ pub fn allow(remote_addr: IpAddr, path: &str) -> bool {
         }
     }
     let limit = if key == "registration" {
-        CONFIG.registration_requests
+        config().registration_requests
     } else {
-        CONFIG.general_requests
+        config().general_requests
     };
     let now = Instant::now();
     let mut entries = REQUESTS.entry(map_key).or_default();
     while entries
         .front()
-        .is_some_and(|time| now.duration_since(*time) >= CONFIG.window)
+        .is_some_and(|time| now.duration_since(*time) >= config().window)
     {
         entries.pop_front();
     }
@@ -44,7 +55,7 @@ pub fn allow(remote_addr: IpAddr, path: &str) -> bool {
 
 pub fn spawn_cleanup_task() -> tokio::task::JoinHandle<()> {
     tokio::spawn(async {
-        let mut ticker = interval(CONFIG.window);
+        let mut ticker = interval(config().window);
         loop {
             ticker.tick().await;
             cleanup_expired();
@@ -57,7 +68,7 @@ fn cleanup_expired() {
     REQUESTS.retain(|_, entries| {
         while entries
             .front()
-            .is_some_and(|time| now.duration_since(*time) >= CONFIG.window)
+            .is_some_and(|time| now.duration_since(*time) >= config().window)
         {
             entries.pop_front();
         }

@@ -9,7 +9,7 @@ use rand::prelude::IteratorRandom;
 use std::sync::Arc;
 
 pub static OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Arc<OmikronConnection>>> =
-    Lazy::new(|| DashMap::new());
+    Lazy::new(DashMap::new);
 
 pub async fn add_omikron(conn: Arc<OmikronConnection>) {
     let id = match conn.clone().get_omikron_id().await {
@@ -64,12 +64,11 @@ pub async fn get_all_connections()
                 .map_err(|_| ())?;
             for user in users {
                 for route in state.presence.routes_for_user(user.id.0) {
-                    if let Some(iotas) = result.get_mut(&route.omikron_id) {
-                        if let Some(iota_id) = user.iota_id
-                            && let Some(users) = iotas.get_mut(&iota_id.0)
-                        {
-                            users.push(user.id.0);
-                        }
+                    if let Some(iotas) = result.get_mut(&route.omikron_id)
+                        && let Some(iota_id) = user.iota_id
+                        && let Some(users) = iotas.get_mut(&iota_id.0)
+                    {
+                        users.push(user.id.0);
                     }
                 }
             }
@@ -97,10 +96,10 @@ pub async fn send_state_batch(
 pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
     let keys: Vec<_> = OMIKRON_CONNECTIONS.iter().map(|e| *e.key()).collect();
 
-    if let Some(key) = keys.into_iter().choose(&mut rand::rng()) {
-        if let Some(connection) = get_connected_omikron(key) {
-            return Ok(connection);
-        }
+    if let Some(key) = keys.into_iter().choose(&mut rand::rng())
+        && let Some(connection) = get_connected_omikron(key)
+    {
+        return Ok(connection);
     }
 
     Err(())

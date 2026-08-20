@@ -1,5 +1,5 @@
 use super::super::connection::{
-    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+    OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::db::user_repo;
 use mtp::{
@@ -34,7 +34,7 @@ pub async fn get(
     let Some(DataValue::Array(ids)) = value.get_data(DataType::UserIds) else {
         return send_error(
             connection,
-            value.get_id(),
+            value.require_id()?,
             CommunicationType::ErrorInvalidData,
             None,
         )
@@ -47,7 +47,7 @@ pub async fn get(
     if session_id.is_none() && !legacy_peer {
         return send_error(
             connection,
-            value.get_id(),
+            value.require_id()?,
             CommunicationType::ErrorInvalidData,
             None,
         )
@@ -60,7 +60,7 @@ pub async fn get(
         let DataValue::SignedNumber(id) = id else {
             return send_error(
                 connection,
-                value.get_id(),
+                value.require_id()?,
                 CommunicationType::ErrorInvalidData,
                 session_id,
             )
@@ -69,7 +69,7 @@ pub async fn get(
         let Ok(user_id) = i64::try_from(*id) else {
             return send_error(
                 connection,
-                value.get_id(),
+                value.require_id()?,
                 CommunicationType::ErrorInvalidData,
                 session_id,
             )
@@ -78,7 +78,7 @@ pub async fn get(
         if user_id <= 0 {
             return send_error(
                 connection,
-                value.get_id(),
+                value.require_id()?,
                 CommunicationType::ErrorInvalidData,
                 session_id,
             )
@@ -95,7 +95,7 @@ pub async fn get(
         Err(_) => {
             return send_error(
                 connection,
-                value.get_id(),
+                value.require_id()?,
                 CommunicationType::ErrorInternal,
                 session_id,
             )
@@ -110,9 +110,10 @@ pub async fn get(
             missing_user_ids.push(user_id);
             continue;
         };
-        let status = state
-            .presence
-            .resolve_public_state(user_id, user.iota_id.map(|id| id.0).unwrap_or_default())
+        let status = user
+            .iota_id
+            .map(|iota_id| state.presence.resolve_public_state(user_id, iota_id.0))
+            .unwrap_or(crate::sql::connection_status::UserStatus::user_offline)
             .to_string();
         let mut map = Vec::new();
         if let Some(kind) = DataType::UserId.try_to_id(&tm) {
@@ -124,7 +125,7 @@ pub async fn get(
         states.push(DataValue::Container(map));
     }
     let response = CommunicationValue::new(CommunicationType::GetStates)
-        .with_id(value.get_id())
+        .with_id(value.require_id()?)
         .add_typed_default(DataType::UserStates, DataValue::Array(states));
     let response = if let Some(session_id) = session_id {
         response.add_typed_default(DataType::SessionId, DataValue::SignedNumber(session_id))

@@ -34,7 +34,7 @@ pub async fn get_short_link(short: &str) -> Result<String, ()> {
         short
     };
     let frag = short.replace(key, "");
-    let normalized = normalize_short(&key);
+    let normalized = normalize_short(key);
 
     let target = short_link_repo::get(&normalized)
         .await

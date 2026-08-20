@@ -1,5 +1,5 @@
 use super::super::connection::{
-    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+    OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::{
     db::{iota_repo, user_repo},
@@ -29,11 +29,16 @@ pub async fn get_user(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    let request_id = value.require_id()?;
+    let sender = value.require_sender_i64()?;
     let state = connection.state();
-    let user = if let Some(id) = value.get_data(DataType::UserId).as_number() {
-        user_repo::get_by_user_id(UserId::from(id as i64))
-            .await
-            .ok()
+    let user = if let Some(id) = value
+        .get_data(DataType::UserId)
+        .as_number()
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
+    {
+        user_repo::get_by_user_id(UserId::from(id)).await.ok()
     } else if let Some(name) = value.get_data(DataType::Username).as_str() {
         user_repo::get_by_username(name).await.ok()
     } else {
@@ -41,7 +46,7 @@ pub async fn get_user(
     };
     let Some(user) = user else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(request_id, CommunicationType::ErrorNotFound)
             .await;
     };
     let id = user.id.0;
@@ -52,11 +57,11 @@ pub async fn get_user(
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| username.clone());
     let mut response = CommunicationValue::new(CommunicationType::GetUserData)
-        .with_id(value.get_id())
+        .with_id(request_id)
         .add_typed_default(DataType::Username, DataValue::Str(username))
         .add_typed_default(
             DataType::PublicKey,
-            DataValue::Str(user.public_key.to_base64()),
+            DataValue::Str(user.public_key.try_to_base64()?),
         )
         .add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()))
         .add_typed_default(DataType::Display, DataValue::Str(display))
@@ -79,7 +84,7 @@ pub async fn get_user(
             response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(avatar)));
     }
     let route = state.presence.user_route(id);
-    let private_request = value.get_sender() as i64 == id;
+    let private_request = sender == id;
     let resolved_status = if private_request {
         if !state
             .presence
@@ -125,13 +130,21 @@ pub async fn get_iota(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    let found = if let Some(id) = value.get_data(DataType::IotaId).as_number() {
-        iota_repo::get_iota_by_id(IotaId::from(id as i64))
+    let request_id = value.require_id()?;
+    let found = if let Some(id) = value
+        .get_data(DataType::IotaId)
+        .as_number()
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
+    {
+        iota_repo::get_iota_by_id(IotaId::from(id))
             .await
             .ok()
             .map(|iota| (iota.id.0, iota.public_key, None, None))
     } else if let Some(id) = value.get_data(DataType::UserId).as_number() {
-        if let Ok(user) = user_repo::get_by_user_id(UserId::from(id as i64)).await {
+        if let Some(id) = i64::try_from(id).ok().filter(|id| *id > 0)
+            && let Ok(user) = user_repo::get_by_user_id(UserId::from(id)).await
+        {
             match user.iota_id {
                 Some(iota_id) => iota_repo::get_iota_by_id(iota_id)
                     .await
@@ -163,12 +176,12 @@ pub async fn get_iota(
     };
     let Some((id, key, user_id, username)) = found else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(request_id, CommunicationType::ErrorNotFound)
             .await;
     };
     let mut response = CommunicationValue::new(CommunicationType::GetIotaData)
-        .with_id(value.get_id())
-        .add_typed_default(DataType::PublicKey, DataValue::Str(key.to_base64()))
+        .with_id(request_id)
+        .add_typed_default(DataType::PublicKey, DataValue::Str(key.try_to_base64()?))
         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(id.into()))
         .add_typed_default(DataType::OmikronConnections, connections(&connection, id));
     if let Some(user_id) = user_id {
@@ -185,7 +198,8 @@ async fn update_user(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    let id = UserId::from(value.get_sender() as i64);
+    let request_id = value.require_id()?;
+    let id = UserId::from(value.require_sender_i64()?);
     let mut error = None;
     if let Some(name) = value.get_data(DataType::Username).as_str() {
         error = user_repo::change_username(id, name.to_owned())
@@ -193,56 +207,55 @@ async fn update_user(
             .err()
             .map(|e| e.to_string());
     }
-    if error.is_none() {
-        if let Some(name) = value.get_data(DataType::Display).as_str() {
-            error = user_repo::change_display_name(id, name.to_owned())
-                .await
-                .err()
-                .map(|e| e.to_string());
-        }
+    if error.is_none()
+        && let Some(name) = value.get_data(DataType::Display).as_str()
+    {
+        error = user_repo::change_display_name(id, name.to_owned())
+            .await
+            .err()
+            .map(|e| e.to_string());
     }
-    if error.is_none() {
-        if let Some(avatar) = value.get_data(DataType::Avatar).as_str() {
-            error = user_repo::change_avatar(id, avatar.to_owned())
-                .await
-                .err()
-                .map(|e| e.to_string());
-        }
+    if error.is_none()
+        && let Some(avatar) = value.get_data(DataType::Avatar).as_str()
+    {
+        error = user_repo::change_avatar(id, avatar.to_owned())
+            .await
+            .err()
+            .map(|e| e.to_string());
     }
-    if error.is_none() {
-        if let Some(about) = value.get_data(DataType::About).as_str() {
-            error = user_repo::change_about(id, about.to_owned())
-                .await
-                .err()
-                .map(|e| e.to_string());
-        }
+    if error.is_none()
+        && let Some(about) = value.get_data(DataType::About).as_str()
+    {
+        error = user_repo::change_about(id, about.to_owned())
+            .await
+            .err()
+            .map(|e| e.to_string());
     }
-    if error.is_none() {
-        if let Some(status) = value.get_data(DataType::Status).as_str() {
-            error = user_repo::change_status(id, status.to_owned())
-                .await
-                .err()
-                .map(|e| e.to_string());
-        }
+    if error.is_none()
+        && let Some(status) = value.get_data(DataType::Status).as_str()
+    {
+        error = user_repo::change_status(id, status.to_owned())
+            .await
+            .err()
+            .map(|e| e.to_string());
     }
-    if error.is_none() {
-        if let Some(key) = value
+    if error.is_none()
+        && let Some(key) = value
             .get_data(DataType::PublicKey)
             .as_str()
             .and_then(|key| PublicKeyBundle::from_base64(key).ok())
-        {
-            error = user_repo::change_keys(id, key)
-                .await
-                .err()
-                .map(|e| e.to_string());
-        }
+    {
+        error = user_repo::change_keys(id, key)
+            .await
+            .err()
+            .map(|e| e.to_string());
     }
     let response = match error {
         None => CommunicationValue::new(CommunicationType::Success),
         Some(error) => CommunicationValue::new(CommunicationType::ErrorInternal)
             .add_typed_default(DataType::ErrorType, DataValue::Str(error)),
     };
-    connection.send(&response.with_id(value.get_id())).await
+    connection.send(&response.with_id(request_id)).await
 }
 
 pub async fn change_user(
@@ -256,34 +269,35 @@ pub async fn change_iota(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    let request_id = value.require_id()?;
     let reset_data = value.get_data(DataType::ResetToken);
     let Some(reset) = reset_data.as_str() else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let new_token_data = value.get_data(DataType::NewToken);
     let Some(new_token) = new_token_data.as_str() else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
-    let user_id = UserId::from(value.get_sender() as i64);
+    let user_id = UserId::from(value.require_sender_i64()?);
     let user = match user_repo::get_by_user_id(user_id).await {
         Ok(user) => user,
         Err(_) => {
             return connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+                .send_error_response(request_id, CommunicationType::ErrorNotFound)
                 .await;
         }
     };
     if user.token != reset {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(request_id, CommunicationType::ErrorInvalidChallenge)
             .await;
     }
     let result =
-        match user_repo::change_iota_id(user_id, Some(IotaId::from(value.get_sender() as i64)))
+        match user_repo::change_iota_id(user_id, Some(IotaId::from(value.require_sender_i64()?)))
             .await
         {
             Ok(()) => user_repo::change_token(user_id, new_token.to_owned()).await,
@@ -294,5 +308,5 @@ pub async fn change_iota(
         Err(error) => CommunicationValue::new(CommunicationType::ErrorInternal)
             .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
     };
-    connection.send(&response.with_id(value.get_id())).await
+    connection.send(&response.with_id(request_id)).await
 }

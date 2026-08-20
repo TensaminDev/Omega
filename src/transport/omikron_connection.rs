@@ -1,12 +1,13 @@
 use super::capabilities::{OmegaCapabilities, PeerCapabilities};
 use crate::models::OmikronId;
 use crate::{
-    load_keyring, log, log_cv_in, log_cv_out, log_err, log_in, server,
+    log, log_cv_in, log_cv_out, log_err, log_in, server,
     state::OmegaState,
+    transport::connection::{RequiredMtpFields, validate_dispatch_fields},
     transport::omikron_manager,
     util::{file_util::load_file_vec, logger::PrintType},
 };
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use mtp::{
     codec::{CommunicationType, CommunicationValue},
     crypto::PublicKeyBundle,
@@ -16,19 +17,21 @@ use mtp::{
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 use tokio::{
-    sync::{Mutex, mpsc},
+    sync::{Mutex, Semaphore, mpsc, oneshot},
     time::interval,
 };
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_WAITING_AGE: Duration = Duration::from_secs(60);
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+static NEXT_CORRELATION_ID: AtomicU32 = AtomicU32::new(1);
 static ACTIVE_CONNECTIONS_BY_IP: once_cell::sync::Lazy<DashMap<IpAddr, usize>> =
     once_cell::sync::Lazy::new(DashMap::new);
 
@@ -47,8 +50,14 @@ impl Drop for ConnectionLimitGuard {
 
 pub type OmikronResult<T> = crate::error::Result<T>;
 pub struct WaitingTask {
-    pub task: Box<dyn Fn(Arc<OmikronConnection>, CommunicationValue) -> bool + Send + Sync>,
+    pub sender: oneshot::Sender<CommunicationValue>,
     pub inserted_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DispatchClass {
+    Concurrent,
+    Ordered,
 }
 
 pub struct OmikronConnection {
@@ -57,6 +66,11 @@ pub struct OmikronConnection {
     sender: Mutex<Option<WebMtpSender>>,
     waiting_tasks: DashMap<u32, WaitingTask>,
     cleanup_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    handler_tasks: TaskTracker,
+    handler_cancel: CancellationToken,
+    handler_limit: Arc<Semaphore>,
+    ordered_sender: mpsc::Sender<CommunicationValue>,
+    ordered_receiver: StdMutex<Option<mpsc::Receiver<CommunicationValue>>>,
     peer_capabilities: PeerCapabilities,
 }
 impl Drop for OmikronConnection {
@@ -64,6 +78,9 @@ impl Drop for OmikronConnection {
         if let Some(handle) = self.cleanup_handle.lock().unwrap().take() {
             handle.abort();
         }
+        self.handler_cancel.cancel();
+        self.handler_tasks.close();
+        self.waiting_tasks.clear();
     }
 }
 
@@ -75,23 +92,139 @@ impl OmikronConnection {
         state: Arc<OmegaState>,
         authenticated: bool,
     ) -> Option<Arc<Self>> {
-        if !authenticated {
+        if !authenticated || id == 0 || i64::try_from(id).is_err() {
             return None;
         }
         let peer_capabilities =
             PeerCapabilities::from_identification_description(description).ok()?;
+        let handler_concurrency = state.omikron_handler_concurrency;
+        let (ordered_sender, ordered_receiver) = mpsc::channel(handler_concurrency);
         Some(Arc::new(Self {
             id,
             state,
             sender: Mutex::new(Some(sender)),
             waiting_tasks: DashMap::new(),
             cleanup_handle: std::sync::Mutex::new(None),
+            handler_tasks: TaskTracker::new(),
+            handler_cancel: CancellationToken::new(),
+            handler_limit: Arc::new(Semaphore::new(handler_concurrency)),
+            ordered_sender,
+            ordered_receiver: StdMutex::new(Some(ordered_receiver)),
             peer_capabilities,
         }))
     }
 
     pub fn peer_capabilities(&self) -> &PeerCapabilities {
         &self.peer_capabilities
+    }
+
+    fn track_handler<F>(&self, task: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let handle = self.handler_tasks.spawn(task);
+        let id = self.id as i64;
+        tokio::spawn(async move {
+            if let Err(error) = handle.await {
+                log_err!(
+                    id,
+                    PrintType::Omega,
+                    "Omikron handler task failed: {}",
+                    error
+                );
+            }
+        });
+    }
+
+    fn start_ordered_worker(self: &Arc<Self>) {
+        let Some(mut receiver) = self.ordered_receiver.lock().unwrap().take() else {
+            return;
+        };
+        let connection = self.clone();
+        let cancellation = self.handler_cancel.clone();
+        self.track_handler(async move {
+            loop {
+                let value = tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    value = receiver.recv() => match value {
+                        Some(value) => value,
+                        None => break,
+                    },
+                };
+                let global_permit = tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    permit = connection.state.global_handler_limit.clone().acquire_owned() => {
+                        match permit {
+                            Ok(permit) => permit,
+                            Err(_) => break,
+                        }
+                    }
+                };
+                let permit = tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    permit = connection.handler_limit.clone().acquire_owned() => {
+                        match permit {
+                            Ok(permit) => permit,
+                            Err(_) => break,
+                        }
+                    }
+                };
+                let result = tokio::select! {
+                    _ = cancellation.cancelled() => break,
+                    result = connection.clone().dispatch(value) => result,
+                };
+                drop(permit);
+                drop(global_permit);
+                if let Err(error) = result {
+                    log_err!(
+                        connection.id as i64,
+                        PrintType::Omega,
+                        "Error processing ordered Omikron message: {}",
+                        error
+                    );
+                }
+            }
+        });
+    }
+
+    async fn stop_handlers(&self) {
+        self.handler_cancel.cancel();
+        self.handler_tasks.close();
+        let _ = tokio::time::timeout(Duration::from_secs(1), self.handler_tasks.wait()).await;
+        self.waiting_tasks.clear();
+    }
+
+    fn correlation_response(value: &CommunicationValue) -> bool {
+        matches!(
+            value.get_comm_type_enum(),
+            Some(CommunicationType::Success)
+                | Some(CommunicationType::ErrorProtocol)
+                | Some(CommunicationType::ErrorAnonymous)
+                | Some(CommunicationType::ErrorInternal)
+                | Some(CommunicationType::ErrorInvalidData)
+                | Some(CommunicationType::ErrorInvalidUserId)
+                | Some(CommunicationType::ErrorInvalidOmikronId)
+                | Some(CommunicationType::ErrorNotFound)
+                | Some(CommunicationType::ErrorNotAuthenticated)
+                | Some(CommunicationType::ErrorNoIota)
+                | Some(CommunicationType::ErrorInvalidChallenge)
+                | Some(CommunicationType::ErrorInvalidSecret)
+                | Some(CommunicationType::ErrorInvalidPrivateKey)
+                | Some(CommunicationType::ErrorInvalidPublicKey)
+                | Some(CommunicationType::ErrorNoUserId)
+                | Some(CommunicationType::ErrorNoCallId)
+                | Some(CommunicationType::ErrorInvalidCallId)
+        )
+    }
+
+    fn next_correlation_id(&self) -> Option<u32> {
+        for _ in 0..u32::MAX {
+            let id = NEXT_CORRELATION_ID.fetch_add(1, Ordering::Relaxed);
+            if id != 0 && !self.waiting_tasks.contains_key(&id) {
+                return Some(id);
+            }
+        }
+        None
     }
 
     pub async fn handle(self: Arc<Self>, receiver: &mut WebMtpReceiver) {
@@ -117,12 +250,16 @@ impl OmikronConnection {
             self.clone().cleanup().await;
             return;
         }
-        let cleanup_conn = self.clone();
+        self.start_ordered_worker();
+        let cleanup_conn = Arc::downgrade(&self);
         *self.cleanup_handle.lock().unwrap() = Some(tokio::spawn(async move {
             let mut ticker = interval(CLEANUP_INTERVAL);
             loop {
                 ticker.tick().await;
-                cleanup_conn
+                let Some(connection) = cleanup_conn.upgrade() else {
+                    break;
+                };
+                connection
                     .waiting_tasks
                     .retain(|_, task| task.inserted_at.elapsed() < MAX_WAITING_AGE);
             }
@@ -164,16 +301,81 @@ impl OmikronConnection {
 
     async fn process_message(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
         log_cv_in!(PrintType::Omikron, &value);
-        if value.is_type(CommunicationType::Relay) {
-            return self.dispatch(value).await;
-        }
-        if let Some(message_id) = value.id()
+        if Self::correlation_response(&value)
+            && let Some(message_id) = value.id()
             && let Some((_, task)) = self.waiting_tasks.remove(&message_id)
         {
-            let _ = (task.task)(self.clone(), value);
+            let _ = task.sender.send(value);
             return Ok(());
         }
-        self.dispatch(value).await
+
+        if !value.is_type(CommunicationType::Relay) {
+            validate_dispatch_fields(&value)?;
+        }
+
+        let dispatch_class = Self::dispatch_class(&value);
+        if dispatch_class == DispatchClass::Ordered {
+            tokio::select! {
+                _ = self.handler_cancel.cancelled() => {
+                    return Err(crate::error::OmegaError::NotConnected);
+                }
+                result = self.ordered_sender.send(value) => {
+                    result.map_err(|_| crate::error::OmegaError::NotConnected)?;
+                }
+            }
+            return Ok(());
+        }
+
+        let global_permit = tokio::select! {
+            _ = self.handler_cancel.cancelled() => {
+                return Err(crate::error::OmegaError::NotConnected);
+            }
+            permit = self.state.global_handler_limit.clone().acquire_owned() => {
+                permit.map_err(|_| crate::error::OmegaError::NotConnected)?
+            }
+        };
+        let permit = tokio::select! {
+            _ = self.handler_cancel.cancelled() => {
+                drop(global_permit);
+                return Err(crate::error::OmegaError::NotConnected);
+            }
+            permit = self.handler_limit.clone().acquire_owned() => {
+                permit.map_err(|_| crate::error::OmegaError::NotConnected)?
+            }
+        };
+        let connection = self.clone();
+        let cancellation = self.handler_cancel.clone();
+        self.track_handler(async move {
+            tokio::select! {
+                _ = cancellation.cancelled() => {}
+                result = connection.clone().dispatch(value) => {
+                    if let Err(error) = result {
+                        log_err!(
+                            connection.id as i64,
+                            PrintType::Omega,
+                            "Error processing Omikron message: {}",
+                            error
+                        );
+                    }
+                }
+            }
+            drop(permit);
+            drop(global_permit);
+        });
+        Ok(())
+    }
+
+    fn dispatch_class(value: &CommunicationValue) -> DispatchClass {
+        match value.get_comm_type_enum() {
+            Some(CommunicationType::UserConnected)
+            | Some(CommunicationType::UserDisconnected)
+            | Some(CommunicationType::IotaConnected)
+            | Some(CommunicationType::IotaDisconnected)
+            | Some(CommunicationType::SyncClientIotaStatus)
+            | Some(CommunicationType::StateSubscribe)
+            | Some(CommunicationType::ClientChanged) => DispatchClass::Ordered,
+            _ => DispatchClass::Concurrent,
+        }
     }
 
     async fn dispatch(self: Arc<Self>, value: CommunicationValue) -> OmikronResult<()> {
@@ -341,33 +543,39 @@ impl OmikronConnection {
         value: &CommunicationValue,
         timeout: Duration,
     ) -> OmikronResult<CommunicationValue> {
-        let (tx, mut rx) = mpsc::channel(1);
-        let message_id = value.id().unwrap_or_default();
-        let task_tx = tx.clone();
-        self.waiting_tasks.insert(
-            message_id,
-            WaitingTask {
-                task: Box::new(move |_, response| {
-                    let task_tx = task_tx.clone();
-                    tokio::spawn(async move {
-                        let _ = task_tx.send(response).await;
-                    });
-                    true
-                }),
-                inserted_at: Instant::now(),
-            },
-        );
+        value.require_id()?;
+        let (tx, rx) = oneshot::channel();
+        let message_id = self.next_correlation_id().ok_or_else(|| {
+            crate::OmegaError::Transport("no relay correlation id available".into())
+        })?;
+        match self.waiting_tasks.entry(message_id) {
+            Entry::Vacant(entry) => {
+                entry.insert(WaitingTask {
+                    sender: tx,
+                    inserted_at: Instant::now(),
+                });
+            }
+            Entry::Occupied(_) => {
+                return Err(crate::OmegaError::Transport(
+                    "relay correlation id collision".into(),
+                ));
+            }
+        }
+        let outbound = value.clone().with_id(message_id);
 
-        if let Err(error) = self.clone().send(value).await {
+        if let Err(error) = self.clone().send(&outbound).await {
             self.waiting_tasks.remove(&message_id);
             return Err(error);
         }
 
-        match tokio::time::timeout(timeout, rx.recv()).await {
-            Ok(Some(response)) => Ok(response),
-            Ok(None) => Err(crate::error::OmegaError::Transport(
-                "Relay response channel closed".into(),
-            )),
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => {
+                self.waiting_tasks.remove(&message_id);
+                Err(crate::error::OmegaError::Transport(
+                    "Relay response channel closed".into(),
+                ))
+            }
             Err(_) => {
                 self.waiting_tasks.remove(&message_id);
                 Err(crate::error::OmegaError::Transport(
@@ -411,6 +619,7 @@ impl OmikronConnection {
         }
     }
     async fn cleanup(self: Arc<Self>) {
+        self.stop_handlers().await;
         if self.id != 0 {
             log_in!(self.id as i64, PrintType::Omega, "Omikron disconnected");
             if omikron_manager::remove_omikron(self.id as i64, &self).await {
@@ -441,7 +650,8 @@ pub async fn get_by_omikron_id(
     description: Option<String>,
 ) -> Option<PublicKeyBundle> {
     PeerCapabilities::from_identification_description(description.as_deref()).ok()?;
-    crate::db::omikron_repo::get_omikron_by_id(OmikronId::from(omikron_id as i64))
+    let omikron_id = i64::try_from(omikron_id).ok().filter(|id| *id > 0)?;
+    crate::db::omikron_repo::get_omikron_by_id(OmikronId::from(omikron_id))
         .await
         .ok()
         .map(|omikron| omikron.public_key)
@@ -453,7 +663,7 @@ pub async fn complete_register(_: PublicKeyBundle, _: Option<String>) -> u64 {
 pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std::error::Error>> {
     let cert_pem = load_file_vec("certs", "cert.pem")?;
     let key_pem = load_file_vec("certs", "key.pem")?;
-    let web_config = server::server::build_web_config()?
+    let web_config = server::web::build_web_config(state.identity.clone())?
         .serve_tcp_https(true)
         .max_tcp_connections(256);
     let ip = IpAddr::from(Ipv4Addr::new(0, 0, 0, 0));
@@ -478,7 +688,7 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             max_frames_per_stream: None,
         })
         .with_authentication(
-            load_keyring(),
+            state.identity.clone_keyring()?,
             Box::new(|id, description| Box::pin(get_by_omikron_id(id, description))),
             Box::new(|key, description| Box::pin(complete_register(key, description))),
         )
@@ -499,7 +709,7 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
                 continue;
             }
         };
-        let config = crate::config::RateLimitConfig::from_env();
+        let config = &state.config.rate_limits;
         let peer_ip = conn.remote_addr.map(|address| address.ip());
         let active = ACTIVE_CONNECTIONS.fetch_add(1, Ordering::AcqRel) + 1;
         let peer_active = peer_ip.map(|ip| {
@@ -507,10 +717,11 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             *count += 1;
             *count
         });
+        let connection_limit_guard = ConnectionLimitGuard(peer_ip);
         if active > config.transport_connections
             || peer_active.is_some_and(|count| count > config.transport_connections_per_ip)
         {
-            drop(ConnectionLimitGuard(peer_ip));
+            drop(connection_limit_guard);
             log_err!(
                 0,
                 PrintType::Omega,
@@ -526,6 +737,7 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             state.clone(),
             authenticated,
         ) else {
+            drop(connection_limit_guard);
             log_err!(
                 0,
                 PrintType::Omega,
@@ -534,10 +746,56 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             continue;
         };
         tokio::spawn(async move {
-            let _guard = ConnectionLimitGuard(peer_ip);
+            let _guard = connection_limit_guard;
             omikron_manager::add_omikron(connection.clone()).await;
             connection.handle(&mut conn.receiver).await;
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DispatchClass, OmikronConnection};
+    use mtp::codec::{CommunicationType, CommunicationValue};
+
+    #[test]
+    fn relay_dispatch_is_not_on_the_ordered_state_lane() {
+        let value = CommunicationValue::new(CommunicationType::Relay);
+        assert_eq!(
+            OmikronConnection::dispatch_class(&value),
+            DispatchClass::Concurrent
+        );
+    }
+
+    #[test]
+    fn presence_lifecycle_dispatch_is_ordered() {
+        let value = CommunicationValue::new(CommunicationType::UserConnected);
+        assert_eq!(
+            OmikronConnection::dispatch_class(&value),
+            DispatchClass::Ordered
+        );
+    }
+
+    #[test]
+    fn client_presence_changes_are_ordered() {
+        let value = CommunicationValue::new(CommunicationType::ClientChanged);
+        assert_eq!(
+            OmikronConnection::dispatch_class(&value),
+            DispatchClass::Ordered
+        );
+    }
+
+    #[test]
+    fn only_protocol_responses_match_waiting_tasks() {
+        assert!(OmikronConnection::correlation_response(
+            &CommunicationValue::new(CommunicationType::Success).with_id(1)
+        ));
+        assert!(OmikronConnection::correlation_response(
+            &CommunicationValue::new(CommunicationType::ErrorInvalidData).with_id(1)
+        ));
+        assert!(!OmikronConnection::correlation_response(
+            &CommunicationValue::new(CommunicationType::GetUserData).with_id(1)
+        ));
+    }
 }

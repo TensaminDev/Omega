@@ -1,4 +1,23 @@
+use std::path::PathBuf;
 use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum IdentityError {
+    #[error("identity storage error at {path}: {source}")]
+    Storage {
+        path: PathBuf,
+        #[source]
+        source: mtp::files::FileError,
+    },
+    #[error("identity I/O error at {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("public key bundle at {path} does not match the private keyring")]
+    PublicBundleMismatch { path: PathBuf },
+}
 
 #[derive(Debug, Error)]
 pub enum OmegaError {
@@ -6,6 +25,10 @@ pub enum OmegaError {
     DatabaseNotInitialized,
     #[error("database error: {0}")]
     Database(sqlx::Error),
+    #[error("cryptographic error: {0}")]
+    Crypto(#[from] mtp::crypto::CryptoError),
+    #[error("identity error: {0}")]
+    Identity(#[from] IdentityError),
     #[error("invalid input: {0}")]
     Validation(String),
     #[error("resource not found")]
@@ -45,6 +68,8 @@ impl OmegaError {
             Self::NotFound => http::StatusCode::NOT_FOUND,
             Self::DatabaseNotInitialized
             | Self::Database(_)
+            | Self::Crypto(_)
+            | Self::Identity(_)
             | Self::Transport(_)
             | Self::NotConnected
             | Self::NotAuthenticated

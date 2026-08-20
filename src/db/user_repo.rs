@@ -20,7 +20,7 @@ pub async fn get_register_id() -> Result<UserId> {
         .unwrap_or(0);
 
     let ts = timestamp as i64;
-    if ts >= 1 && ts <= MAX_PROTOCOL_ID {
+    if (1..=MAX_PROTOCOL_ID).contains(&ts) {
         return Ok(UserId::from(ts));
     }
 
@@ -335,15 +335,6 @@ pub async fn change_status(id: UserId, value: String) -> Result<()> {
     .await
 }
 
-pub async fn change_presence_preference(id: UserId, value: String) -> Result<()> {
-    update(
-        id,
-        "UPDATE users SET presence_preference = ? WHERE id = ?",
-        value.into_bytes(),
-    )
-    .await
-}
-
 pub async fn change_iota_id(id: UserId, value: Option<IotaId>) -> Result<()> {
     sqlx::query("UPDATE users SET iota_id = ? WHERE id = ?")
         .bind(value.map(|id| id.0))
@@ -360,14 +351,6 @@ pub async fn change_token(id: UserId, value: String) -> Result<()> {
     )
     .await
 }
-pub async fn delete_user(id: UserId) -> Result<()> {
-    sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(id.0)
-        .execute(&pool().await?)
-        .await?;
-    Ok(())
-}
-
 /// Delete the central identity while retaining a durable instruction for the
 /// last hosting Iota. The pending row is intentionally independent of users:
 /// it must outlive the account row.
@@ -422,8 +405,9 @@ pub async fn acknowledge_pending_erasure(user_id: UserId, iota_id: IotaId) -> Re
 }
 
 pub async fn change_keys(id: UserId, public_key: PublicKeyBundle) -> Result<()> {
+    let public_key = public_key.try_as_bytes()?;
     sqlx::query("UPDATE users SET public_key = ? WHERE id = ?")
-        .bind(public_key.as_bytes())
+        .bind(public_key)
         .bind(id.0)
         .execute(&pool().await?)
         .await?;
@@ -446,6 +430,7 @@ pub async fn register_complete_user(
     if !valid_username(&username) {
         return Err(OmegaError::Validation("invalid username".into()));
     }
+    let public_key_bytes = public_key.try_as_bytes()?;
 
     let mut transaction = pool().await?.begin().await?;
     let lease = sqlx::query(
@@ -472,7 +457,7 @@ pub async fn register_complete_user(
     )
     .bind(id.0)
     .bind(username.as_bytes())
-    .bind(public_key.as_bytes())
+    .bind(&public_key_bytes)
     .bind(iota_id.0)
     .bind(token.as_bytes())
     .execute(&mut *transaction)
@@ -485,20 +470,20 @@ pub async fn register_complete_user(
                 .bind(id.0)
                 .fetch_optional(&mut *transaction)
                 .await?;
-            match existing
-                .map(User::try_from)
-                .transpose()
-                .map_err(OmegaError::from)?
-            {
-                Some(existing)
-                    if existing.iota_id == Some(iota_id)
+            let existing_matches = match existing {
+                Some(existing) => {
+                    let existing = User::try_from(existing).map_err(OmegaError::from)?;
+                    existing.iota_id == Some(iota_id)
                         && existing.username == username
-                        && existing.public_key.as_bytes() == public_key.as_bytes()
-                        && existing.token == token =>
-                {
-                    Ok(())
+                        && existing.public_key.try_as_bytes()? == public_key_bytes
+                        && existing.token == token
                 }
-                _ => Err(insert_error.into()),
+                None => false,
+            };
+            if existing_matches {
+                Ok(())
+            } else {
+                Err(insert_error.into())
             }
         }
     };

@@ -21,14 +21,6 @@ pub enum RouteTarget {
 }
 
 impl RouteTarget {
-    pub fn wire_id(self) -> Option<u64> {
-        let (kind, id) = match self {
-            Self::User(id) => (USER_TARGET_KIND, id),
-            Self::Iota(id) => (IOTA_TARGET_KIND, id),
-        };
-        (id > 0 && id <= TARGET_ID_MASK).then_some(kind | id)
-    }
-
     pub fn from_wire_id(value: u64) -> Option<Self> {
         let id = value & TARGET_ID_MASK;
         if id == 0 || value & !(TARGET_KIND_MASK | TARGET_ID_MASK) != 0 {
@@ -38,12 +30,6 @@ impl RouteTarget {
             USER_TARGET_KIND => Some(Self::User(id)),
             IOTA_TARGET_KIND => Some(Self::Iota(id)),
             _ => None,
-        }
-    }
-
-    pub const fn id(self) -> u64 {
-        match self {
-            Self::User(id) | Self::Iota(id) => id,
         }
     }
 }
@@ -183,10 +169,11 @@ mod tests {
     use mtp::codec::DataValue;
 
     fn wire(target: RouteTarget) -> u64 {
-        let Some(value) = target.wire_id() else {
-            panic!("valid route target was rejected");
+        let (kind, id) = match target {
+            RouteTarget::User(id) => (USER_TARGET_KIND, id),
+            RouteTarget::Iota(id) => (IOTA_TARGET_KIND, id),
         };
-        value
+        kind | id
     }
 
     fn relay_frame() -> CommunicationValue {

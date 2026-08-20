@@ -8,7 +8,7 @@ use crate::db::{
     user_repo::{get_by_user_id, get_by_username},
 };
 use crate::error::{OmegaError, Result};
-use crate::load_keyring;
+use crate::identity::OmegaIdentity;
 use crate::models::UserId;
 use crate::server::{
     middleware,
@@ -24,6 +24,7 @@ use bytes::Bytes;
 use http::{Method, StatusCode};
 use mtp::webserver::{HttpRequest, HttpResponse, RouteParams};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 fn error_body(error: &OmegaError) -> String {
     json(&StatusResponse {
@@ -35,11 +36,11 @@ fn error_body(error: &OmegaError) -> String {
     })
 }
 
-fn user_response(user: crate::models::User) -> UserResponse {
-    UserResponse {
+fn user_response(user: crate::models::User) -> Result<UserResponse> {
+    Ok(UserResponse {
         status: "success",
         username: user.username,
-        public_key: user.public_key.to_base64(),
+        public_key: user.public_key.try_to_base64()?,
         user_id: user.id.0,
         iota_id: user.iota_id.map(|id| id.0),
         sub_level: user.sub_level,
@@ -50,10 +51,10 @@ fn user_response(user: crate::models::User) -> UserResponse {
         avatar: user
             .avatar
             .map(|value| base64::engine::general_purpose::STANDARD.encode(value)),
-    }
+    })
 }
 
-async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
+async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusCode, String)> {
     match path_parts {
         ["api", "get", "omikron"] => {
             let connection = get_random_omikron()
@@ -69,7 +70,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 json(&OmikronResponse {
                     status: "success",
                     id,
-                    public_key: omikron.public_key.to_base64(),
+                    public_key: omikron.public_key.try_to_base64()?,
                     ip_address: omikron.ip_address,
                     port: omikron.port,
                 }),
@@ -105,7 +106,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 json(&OmikronResponse {
                     status: "success",
                     id: omikron.id.0,
-                    public_key: omikron.public_key.to_base64(),
+                    public_key: omikron.public_key.try_to_base64()?,
                     ip_address: omikron.ip_address,
                     port: omikron.port,
                 }),
@@ -120,12 +121,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 .map(|(omikron_id, iotas)| {
                     let iotas = iotas
                         .into_iter()
-                        .map(|(iota_id, users)| {
-                            (
-                                iota_id.to_string(),
-                                users.into_iter().map(i64::from).collect(),
-                            )
-                        })
+                        .map(|(iota_id, users)| (iota_id.to_string(), users.into_iter().collect()))
                         .collect();
                     (omikron_id.to_string(), iotas)
                 })
@@ -146,7 +142,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 json(&IotaResponse {
                     status: "success",
                     iota_id: iota.id.0,
-                    public_key: iota.public_key.to_base64(),
+                    public_key: iota.public_key.try_to_base64()?,
                 }),
             ))
         }
@@ -158,7 +154,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
                 json(&UsernameResponse {
                     status: "success",
                     username: user.username,
-                    public_key: user.public_key.to_base64(),
+                    public_key: user.public_key.try_to_base64()?,
                     user_id: user.id.0,
                     iota_id: user.iota_id.map(|id| id.0),
                     sub_level: user.sub_level,
@@ -168,7 +164,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
         }
         ["api", "get", "public_key"] => {
             let public_key = base64::engine::general_purpose::STANDARD
-                .encode(load_keyring().public_key_bundle().as_bytes());
+                .encode(identity.public_key_bundle().try_as_bytes()?);
             Ok((
                 StatusCode::OK,
                 json(&PublicKeyResponse {
@@ -180,7 +176,7 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
         ["api", "get", "user", id] => {
             let id = parse_positive_id(id)?;
             let user = get_by_user_id(UserId::from(id)).await?;
-            Ok((StatusCode::OK, json(&user_response(user))))
+            Ok((StatusCode::OK, json(&user_response(user)?)))
         }
         _ => Ok((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -189,13 +185,17 @@ async fn route(path_parts: &[&str]) -> Result<(StatusCode, String)> {
     }
 }
 
-pub async fn handle(request: HttpRequest, response: HttpResponse) -> HttpResponse {
+pub async fn handle(
+    request: HttpRequest,
+    response: HttpResponse,
+    identity: Arc<OmegaIdentity>,
+) -> HttpResponse {
     let method = request.method;
     let path = request.uri.path().to_string();
     if method != Method::OPTIONS && !middleware::allow(request.remote_addr.ip(), &path) {
         return response
             .status(StatusCode::TOO_MANY_REQUESTS)
-            .header("access-control-allow-origin", &crate::config::cors_origin())
+            .header("access-control-allow-origin", crate::config::cors_origin())
             .body(json(&StatusResponse {
                 status: "error_rate_limited",
             }));
@@ -203,7 +203,7 @@ pub async fn handle(request: HttpRequest, response: HttpResponse) -> HttpRespons
     if method == Method::OPTIONS {
         return response
             .status(StatusCode::OK)
-            .header("access-control-allow-origin", &crate::config::cors_origin())
+            .header("access-control-allow-origin", crate::config::cors_origin())
             .header("access-control-allow-methods", "GET, POST, OPTIONS")
             .header("access-control-allow-headers", "*");
     }
@@ -213,7 +213,7 @@ pub async fn handle(request: HttpRequest, response: HttpResponse) -> HttpRespons
         return match std::fs::read(file_path) {
             Ok(bytes) => response
                 .status(StatusCode::OK)
-                .header("access-control-allow-origin", &crate::config::cors_origin())
+                .header("access-control-allow-origin", crate::config::cors_origin())
                 .header("content-type", "application/zip")
                 .header(
                     "content-disposition",
@@ -222,7 +222,7 @@ pub async fn handle(request: HttpRequest, response: HttpResponse) -> HttpRespons
                 .body(Bytes::from(bytes)),
             Err(_) => response
                 .status(StatusCode::NOT_FOUND)
-                .header("access-control-allow-origin", &crate::config::cors_origin())
+                .header("access-control-allow-origin", crate::config::cors_origin())
                 .body(json(&StatusResponse {
                     status: "error_not_found",
                 })),
@@ -237,12 +237,12 @@ pub async fn handle(request: HttpRequest, response: HttpResponse) -> HttpRespons
             .status(StatusCode::TEMPORARY_REDIRECT)
             .header("location", &location);
     }
-    let (status, body) = route(&path_parts)
+    let (status, body) = route(&path_parts, &identity)
         .await
         .unwrap_or_else(|error| (error.status_code(), error_body(&error)));
     response
         .status(status)
-        .header("access-control-allow-origin", &crate::config::cors_origin())
+        .header("access-control-allow-origin", crate::config::cors_origin())
         .header("access-control-allow-headers", "*")
         .header("access-control-allow-methods", "GET, POST, OPTIONS")
         .body(body)
@@ -252,6 +252,7 @@ pub async fn handle_pattern(
     request: HttpRequest,
     response: HttpResponse,
     _params: RouteParams,
+    identity: Arc<OmegaIdentity>,
 ) -> HttpResponse {
-    handle(request, response).await
+    handle(request, response, identity).await
 }

@@ -1,5 +1,5 @@
 use super::super::connection::{
-    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+    OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::{
     db::user_repo, log_in, models::IotaId, sql::connection_status::UserStatus, state::OmegaState,
@@ -11,7 +11,10 @@ use std::{
 };
 
 fn parse_subscription(value: &CommunicationValue) -> Result<(i64, i64, Vec<i64>), &'static str> {
-    let user_id = i64::try_from(value.get_sender())
+    let Some(sender) = value.sender() else {
+        return Err("user_id");
+    };
+    let user_id = i64::try_from(sender)
         .ok()
         .filter(|id| *id > 0)
         .ok_or("user_id")?;
@@ -51,13 +54,11 @@ fn states_for_users(state: &OmegaState, users: &[crate::models::User]) -> HashMa
     users
         .iter()
         .map(|user| {
-            (
-                user.id.0,
-                state.presence.resolve_public_state(
-                    user.id.0,
-                    user.iota_id.map(|id| id.0).unwrap_or_default(),
-                ),
-            )
+            let status = user
+                .iota_id
+                .map(|iota_id| state.presence.resolve_public_state(user.id.0, iota_id.0))
+                .unwrap_or(UserStatus::user_offline);
+            (user.id.0, status)
         })
         .collect()
 }
@@ -70,9 +71,10 @@ fn changed_states(
     let mut changes = users
         .iter()
         .filter_map(|user| {
-            let after = state
-                .presence
-                .resolve_public_state(user.id.0, user.iota_id.map(|id| id.0).unwrap_or_default());
+            let after = user
+                .iota_id
+                .map(|iota_id| state.presence.resolve_public_state(user.id.0, iota_id.0))
+                .unwrap_or(UserStatus::user_offline);
             (before.get(&user.id.0) != Some(&after)).then_some((user.id.0, after))
         })
         .collect::<Vec<_>>();
@@ -91,21 +93,6 @@ fn state_notification(
         .add_typed_default(
             DataType::SessionId,
             DataValue::SignedNumber(subscriber.session_id.into()),
-        )
-        .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.into()))
-        .add_typed_default(DataType::UserState, DataValue::Str(user_state.to_string()))
-}
-
-fn private_state_notification(
-    user_id: i64,
-    session_id: i64,
-    user_state: &UserStatus,
-) -> CommunicationValue {
-    CommunicationValue::new(CommunicationType::ClientChanged)
-        .with_receiver(user_id as u64)
-        .add_typed_default(
-            DataType::SessionId,
-            DataValue::SignedNumber(session_id.into()),
         )
         .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.into()))
         .add_typed_default(DataType::UserState, DataValue::Str(user_state.to_string()))
@@ -143,28 +130,6 @@ async fn publish_changed_states(
     publish_state_changes(state, &changed_states(state, before, users)).await;
 }
 
-async fn publish_private_state(state: &OmegaState, user_id: i64, user_state: &UserStatus) {
-    let mut grouped = BTreeMap::<i64, Vec<CommunicationValue>>::new();
-    for (session_id, route) in state.presence.sessions_for_user(user_id) {
-        grouped
-            .entry(route.omikron_id)
-            .or_default()
-            .push(private_state_notification(user_id, session_id, user_state));
-    }
-    for (omikron_id, notifications) in grouped {
-        if let Err(error) =
-            crate::transport::omikron_manager::send_state_batch(omikron_id, notifications).await
-        {
-            log_in!(
-                crate::util::logger::PrintType::General,
-                "Failed to deliver private presence state batch to Omikron {}: {}",
-                omikron_id,
-                error
-            );
-        }
-    }
-}
-
 pub async fn state_subscribe(
     state: Arc<OmegaState>,
     connection: Arc<OmikronConnection>,
@@ -175,13 +140,13 @@ pub async fn state_subscribe(
         Ok(subscription) => subscription,
         Err("user_id") => {
             return connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorNoUserId)
+                .send_error_response(value.require_id()?, CommunicationType::ErrorNoUserId)
                 .await;
         }
         Err(detail) => {
             return connection
                 .send_error_response_with_detail(
-                    value.get_id(),
+                    value.require_id()?,
                     CommunicationType::ErrorInvalidData,
                     detail,
                 )
@@ -190,14 +155,14 @@ pub async fn state_subscribe(
     };
     if !state.presence.owns_session(user_id, session_id, omikron_id) {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNoIota)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNoIota)
             .await;
     }
     state
         .presence
         .replace_subscription(user_id, session_id, omikron_id, user_ids);
     connection
-        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
 }
 
@@ -242,7 +207,7 @@ pub async fn user_connected(
         .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let Some(session_id) = value
@@ -252,7 +217,7 @@ pub async fn user_connected(
         .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let Some(iota_id) = value
@@ -262,25 +227,25 @@ pub async fn user_connected(
         .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let user = match user_repo::get_by_user_id(user_id.into()).await {
         Ok(user) => user,
         Err(crate::error::OmegaError::NotFound) => {
             return connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+                .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
                 .await;
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
     let preferences = match user_repo::get_presence_preferences(&[user_id]).await {
         Ok(preferences) => preferences,
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
     if user.iota_id.map(|id| id.0) != Some(iota_id) || !state.presence.has_iota_route(iota_id) {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNoIota)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNoIota)
             .await;
     }
     apply_preferences(&state, preferences);
@@ -291,7 +256,7 @@ pub async fn user_connected(
         .track_session(user_id, session_id, omikron_id, iota_id);
     publish_changed_states(&state, &before, &users).await;
     connection
-        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
 }
 
@@ -309,7 +274,7 @@ pub async fn user_disconnected(
         .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let Some(session_id) = value
@@ -319,7 +284,7 @@ pub async fn user_disconnected(
         .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     if let Ok(user) = user_repo::get_by_user_id(user_id.into()).await {
@@ -337,137 +302,7 @@ pub async fn user_disconnected(
             .remove_session(user_id, session_id, omikron_id);
     }
     connection
-        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
-        .await
-}
-
-pub async fn set_user_state(
-    state: Arc<OmegaState>,
-    connection: Arc<OmikronConnection>,
-    value: CommunicationValue,
-    omikron_id: i64,
-) -> OmikronResult<()> {
-    let Some(user_id) = i64::try_from(value.get_sender()).ok().filter(|id| *id > 0) else {
-        return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNoUserId)
-            .await;
-    };
-    if let Some(requested_user) = value.get_data(DataType::UserId) {
-        let Some(requested_user_id) = requested_user
-            .as_number()
-            .and_then(|id| i64::try_from(id).ok())
-        else {
-            return connection
-                .send_error_response_with_detail(
-                    value.get_id(),
-                    CommunicationType::ErrorInvalidData,
-                    "user_id",
-                )
-                .await;
-        };
-        if requested_user_id != user_id {
-            return connection
-                .send_error_response_with_detail(
-                    value.get_id(),
-                    CommunicationType::ErrorInvalidData,
-                    "user_id",
-                )
-                .await;
-        }
-    }
-    let Some(iota_id) = value
-        .get_data(DataType::IotaId)
-        .as_number()
-        .and_then(|id| i64::try_from(id).ok())
-    else {
-        return connection
-            .send_error_response_with_detail(
-                value.get_id(),
-                CommunicationType::ErrorInvalidData,
-                "iota_id",
-            )
-            .await;
-    };
-    let Some(requested_state) = value
-        .get_data(DataType::UserState)
-        .as_str()
-        .and_then(UserStatus::from_client_preference)
-    else {
-        return connection
-            .send_error_response_with_detail(
-                value.get_id(),
-                CommunicationType::ErrorInvalidData,
-                "user_state",
-            )
-            .await;
-    };
-    if !state.presence.has_iota_route(iota_id) {
-        return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNoIota)
-            .await;
-    }
-    let Some(session_id) = value
-        .get_data(DataType::SessionId)
-        .as_number()
-        .and_then(|id| i64::try_from(id).ok())
-        .filter(|id| *id > 0)
-    else {
-        return connection
-            .send_error_response_with_detail(
-                value.get_id(),
-                CommunicationType::ErrorInvalidData,
-                "session_id",
-            )
-            .await;
-    };
-    let Some(route) = state.presence.session_route(user_id, session_id) else {
-        return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNoIota)
-            .await;
-    };
-    if route.omikron_id != omikron_id || route.iota_id != iota_id {
-        return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
-            .await;
-    }
-    if !state.presence.has_active_session_for_iota(user_id, iota_id) {
-        return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNoIota)
-            .await;
-    }
-    let previous_preference = state.presence.preference(user_id);
-    let previous_state = state.presence.resolve_public_state(user_id, iota_id);
-    if let Err(error) =
-        user_repo::change_presence_preference(user_id.into(), requested_state.to_string()).await
-    {
-        log_in!(
-            crate::util::logger::PrintType::General,
-            "Failed to persist presence preference: {}",
-            error
-        );
-        return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInternal)
-            .await;
-    }
-    state
-        .presence
-        .set_preference(user_id, requested_state.clone());
-    let new_state = state.presence.resolve_public_state(user_id, iota_id);
-    if requested_state != previous_preference {
-        publish_private_state(&state, user_id, &requested_state).await;
-    }
-    if requested_state != previous_preference && new_state != previous_state {
-        publish_state_changes(&state, &[(user_id, new_state)]).await;
-    }
-    connection
-        .send(
-            &CommunicationValue::new(CommunicationType::Success)
-                .with_id(value.get_id())
-                .add_typed_default(
-                    DataType::UserState,
-                    DataValue::Str(requested_state.to_string()),
-                ),
-        )
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
 }
 
@@ -481,10 +316,11 @@ pub async fn iota_connected(
     let Some(iota_id) = value
         .get_data(DataType::IotaId)
         .as_number()
-        .map(|id| id as i64)
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let users = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await?;
@@ -503,7 +339,7 @@ pub async fn iota_connected(
     crate::transport::omikron_manager::deliver_pending_erasures(iota_id).await;
     publish_changed_states(&state, &before, &users).await;
     connection
-        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
 }
 
@@ -517,10 +353,11 @@ pub async fn iota_disconnected(
     let Some(iota_id) = value
         .get_data(DataType::IotaId)
         .as_number()
-        .map(|id| id as i64)
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidData)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
     let users = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await?;
@@ -530,7 +367,7 @@ pub async fn iota_disconnected(
     state.presence.untrack_iota_connection(iota_id, omikron_id);
     publish_changed_states(&state, &before, &users).await;
     connection
-        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
 }
 
@@ -540,7 +377,7 @@ pub async fn sync_status(
     value: CommunicationValue,
     omikron_id: i64,
 ) -> OmikronResult<()> {
-    let request_id = value.get_id();
+    let request_id = value.require_id()?;
     let Some(DataValue::Array(iota_values)) = value.get_data(DataType::IotaIds) else {
         return connection
             .send_error_response(request_id, CommunicationType::ErrorInvalidData)

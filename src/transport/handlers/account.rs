@@ -1,5 +1,5 @@
 use super::super::connection::{
-    MtpValueCompat, OmikronConnection, OmikronResult, OptionalDataValueCompat,
+    OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::{
     db::{iota_repo, user_repo},
@@ -22,24 +22,30 @@ async fn delete(
         Err(error) => CommunicationValue::new(CommunicationType::ErrorInternal)
             .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
     };
-    connection.send(&response.with_id(value.get_id())).await
+    connection
+        .send(&response.with_id(value.require_id()?))
+        .await
 }
 
 pub async fn user(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    let user_id = UserId::from(value.get_sender() as i64);
+    value.require_id()?;
+    value.require_sender_i64()?;
+    let user_id = UserId::from(value.require_sender_i64()?);
     complete_delete(connection, value, user_id).await
 }
 pub async fn iota(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     delete(
         connection,
         value.clone(),
-        iota_repo::delete_iota(IotaId::from(value.get_sender() as i64)),
+        iota_repo::delete_iota(IotaId::from(value.require_sender_i64()?)),
     )
     .await
 }
@@ -48,6 +54,8 @@ pub async fn release_from_iota(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_signed_number()
@@ -55,18 +63,21 @@ pub async fn release_from_iota(
         .filter(|id| *id > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidUserId)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
             .await;
     };
-    let requester = IotaId::from(value.get_sender() as i64);
+    let requester = IotaId::from(value.require_sender_i64()?);
     let Ok(user) = user_repo::get_by_user_id(UserId::from(user_id)).await else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
             .await;
     };
     if user.iota_id != Some(requester) {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotAuthenticated)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorNotAuthenticated,
+            )
             .await;
     }
     let previous_iota = user.iota_id;
@@ -76,14 +87,17 @@ pub async fn release_from_iota(
                 crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
             }
             connection
-                .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+                .send(
+                    &CommunicationValue::new(CommunicationType::Success)
+                        .with_id(value.require_id()?),
+                )
                 .await
         }
         Err(error) => {
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.get_id())
+                        .with_id(value.require_id()?)
                         .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
                 )
                 .await
@@ -104,6 +118,8 @@ pub async fn attach_begin(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_signed_number()
@@ -111,7 +127,7 @@ pub async fn attach_begin(
         .filter(|v| *v > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidUserId)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
             .await;
     };
     if user_repo::get_by_user_id(UserId::from(user_id))
@@ -119,10 +135,10 @@ pub async fn attach_begin(
         .is_err()
     {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
             .await;
     }
-    let requester = value.get_sender() as i64;
+    let requester = value.require_sender_i64()?;
     let nonce =
         connection
             .state()
@@ -130,7 +146,7 @@ pub async fn attach_begin(
     connection
         .send(
             &CommunicationValue::new(CommunicationType::AttachUserChallenge)
-                .with_id(value.get_id())
+                .with_id(value.require_id()?)
                 .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.into()))
                 .add_typed_default(DataType::ServerNonce, DataValue::SignedNumber(nonce.into())),
         )
@@ -141,6 +157,8 @@ pub async fn attach_complete(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_signed_number()
@@ -148,24 +166,30 @@ pub async fn attach_complete(
         .filter(|v| *v > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidUserId)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
             .await;
     };
-    let requester = value.get_sender() as i64;
+    let requester = value.require_sender_i64()?;
     let Some(nonce) = value
         .get_data(DataType::ServerNonce)
         .as_signed_number()
         .and_then(|v| u64::try_from(v).ok())
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorInvalidChallenge,
+            )
             .await;
     };
     let signature = value.get_data(DataType::Signature).as_bytes();
     let pq_signature = value.get_data(DataType::PqSignature).as_bytes();
     let (Some(signature), Some(pq_signature)) = (signature, pq_signature) else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorInvalidChallenge,
+            )
             .await;
     };
     if !connection.state().consume_challenge(
@@ -175,12 +199,15 @@ pub async fn attach_complete(
         nonce,
     ) {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorInvalidChallenge,
+            )
             .await;
     }
     let Ok(user) = user_repo::get_by_user_id(UserId::from(user_id)).await else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
             .await;
     };
     let payload = lifecycle_payload(b"tensamin:user-attach:v1\0", user_id, requester, nonce);
@@ -188,7 +215,10 @@ pub async fn attach_complete(
         || verify_ml_dsa(&user.public_key.sig_pq_public_key, &payload, &pq_signature).is_err()
     {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotAuthenticated)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorNotAuthenticated,
+            )
             .await;
     }
     let previous_iota = user.iota_id;
@@ -199,12 +229,15 @@ pub async fn attach_complete(
             }
             crate::transport::omikron_manager::publish_iota_user_snapshot(requester).await;
             connection
-                .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+                .send(
+                    &CommunicationValue::new(CommunicationType::Success)
+                        .with_id(value.require_id()?),
+                )
                 .await
         }
         Err(_) => {
             connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorInternal)
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
         }
     }
@@ -225,7 +258,7 @@ async fn complete_delete(
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::Success)
-                        .with_id(value.get_id())
+                        .with_id(value.require_id()?)
                         .add_typed_default(
                             DataType::CleanupPending,
                             DataValue::Bool(cleanup_pending),
@@ -235,14 +268,14 @@ async fn complete_delete(
         }
         Err(crate::error::OmegaError::NotFound) => {
             connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+                .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
                 .await
         }
         Err(error) => {
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.get_id())
+                        .with_id(value.require_id()?)
                         .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
                 )
                 .await
@@ -254,6 +287,8 @@ pub async fn delete_credential_begin(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_signed_number()
@@ -261,7 +296,7 @@ pub async fn delete_credential_begin(
         .filter(|v| *v > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidUserId)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
             .await;
     };
     if user_repo::get_by_user_id(UserId::from(user_id))
@@ -269,10 +304,10 @@ pub async fn delete_credential_begin(
         .is_err()
     {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
             .await;
     }
-    let requester = value.get_sender() as i64;
+    let requester = value.require_sender_i64()?;
     let nonce =
         connection
             .state()
@@ -280,7 +315,7 @@ pub async fn delete_credential_begin(
     connection
         .send(
             &CommunicationValue::new(CommunicationType::DeleteUserCredentialChallenge)
-                .with_id(value.get_id())
+                .with_id(value.require_id()?)
                 .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.into()))
                 .add_typed_default(DataType::ServerNonce, DataValue::SignedNumber(nonce.into())),
         )
@@ -291,6 +326,8 @@ pub async fn delete_credential_complete(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_signed_number()
@@ -298,17 +335,20 @@ pub async fn delete_credential_complete(
         .filter(|v| *v > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidUserId)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
             .await;
     };
-    let requester = value.get_sender() as i64;
+    let requester = value.require_sender_i64()?;
     let Some(nonce) = value
         .get_data(DataType::ServerNonce)
         .as_signed_number()
         .and_then(|v| u64::try_from(v).ok())
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorInvalidChallenge,
+            )
             .await;
     };
     let (Some(signature), Some(pq_signature)) = (
@@ -316,7 +356,10 @@ pub async fn delete_credential_complete(
         value.get_data(DataType::PqSignature).as_bytes(),
     ) else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorInvalidChallenge,
+            )
             .await;
     };
     if !connection.state().consume_challenge(
@@ -326,12 +369,15 @@ pub async fn delete_credential_complete(
         nonce,
     ) {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidChallenge)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorInvalidChallenge,
+            )
             .await;
     }
     let Ok(user) = user_repo::get_by_user_id(UserId::from(user_id)).await else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotFound)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
             .await;
     };
     let payload = lifecycle_payload(b"tensamin:user-delete:v1\0", user_id, requester, nonce);
@@ -339,7 +385,10 @@ pub async fn delete_credential_complete(
         || verify_ml_dsa(&user.public_key.sig_pq_public_key, &payload, &pq_signature).is_err()
     {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorNotAuthenticated)
+            .send_error_response(
+                value.require_id()?,
+                CommunicationType::ErrorNotAuthenticated,
+            )
             .await;
     }
     complete_delete(connection, value, user.id).await
@@ -349,6 +398,8 @@ pub async fn erase_hosted_user_data_ack(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
+    value.require_id()?;
+    value.require_sender_i64()?;
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_signed_number()
@@ -356,45 +407,31 @@ pub async fn erase_hosted_user_data_ack(
         .filter(|v| *v > 0)
     else {
         return connection
-            .send_error_response(value.get_id(), CommunicationType::ErrorInvalidUserId)
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
             .await;
     };
-    let iota_id = IotaId::from(value.get_sender() as i64);
+    let iota_id = IotaId::from(value.require_sender_i64()?);
     match user_repo::acknowledge_pending_erasure(UserId::from(user_id), iota_id).await {
         Ok(true) => {
             connection
-                .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.get_id()))
+                .send(
+                    &CommunicationValue::new(CommunicationType::Success)
+                        .with_id(value.require_id()?),
+                )
                 .await
         }
         Ok(false) => {
             connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorNotAuthenticated)
+                .send_error_response(
+                    value.require_id()?,
+                    CommunicationType::ErrorNotAuthenticated,
+                )
                 .await
         }
         Err(_) => {
             connection
-                .send_error_response(value.get_id(), CommunicationType::ErrorInternal)
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
         }
     }
-}
-
-/// New lifecycle operation names are intentionally fail-closed until their
-/// proof and durable-erasure handlers are enabled.  This explicit dispatch
-/// prevents either a bare Iota request or the legacy DeleteUser path from
-/// acquiring account-deletion authority during a staged rollout.
-pub async fn lifecycle_unavailable(
-    connection: Arc<OmikronConnection>,
-    value: CommunicationValue,
-) -> OmikronResult<()> {
-    connection
-        .send(
-            &CommunicationValue::new(CommunicationType::ErrorNotAuthenticated)
-                .with_id(value.get_id())
-                .add_typed_default(
-                    DataType::ErrorType,
-                    DataValue::Str("user lifecycle proof handler is not enabled".into()),
-                ),
-        )
-        .await
 }

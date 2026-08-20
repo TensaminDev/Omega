@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod db;
 pub mod error;
+mod identity;
 mod models;
 mod server;
 mod sql;
@@ -17,45 +18,18 @@ use crate::transport::omikron_connection;
 use crate::util::file_util::get_directory;
 use crate::util::logger::PrintType;
 use crate::util::logger::startup;
+use crate::{config::OmegaConfig, server::middleware};
 use dotenv::from_path;
-use mtp::crypto::Keyring;
-use mtp::files::{load_keyring_raw, save_keyring_raw, save_public_key_bundle};
-use once_cell::sync::Lazy;
 use rustls::crypto::aws_lc_rs::default_provider;
 use std::env;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::interval;
-
-const KEYRING_PATH: &str = "./omega.mk";
-
-static KEYRING: Lazy<Keyring> = Lazy::new(|| {
-    load_keyring_raw(KEYRING_PATH).unwrap_or_else(|_| {
-        let kr = Keyring::generate();
-        if let Err(error) = save_keyring_raw(&kr, KEYRING_PATH) {
-            eprintln!("Failed to save generated keyring: {error}");
-        }
-        if let Err(error) = save_public_key_bundle(&kr.public_key_bundle(), KEYRING_PATH) {
-            eprintln!("Failed to save generated public key bundle: {error}");
-        }
-        eprintln!("Generated new keyring at {}", KEYRING_PATH);
-        kr
-    })
-});
-
-pub fn get_keyring() -> &'static Keyring {
-    &KEYRING
-}
-pub fn load_keyring() -> Keyring {
-    Keyring::from_bytes(&KEYRING.to_bytes()).unwrap_or_else(|error| {
-        eprintln!("Failed to clone keyring: {error}");
-        Keyring::generate()
-    })
-}
+use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() {
-    if let Err(_) = default_provider().install_default() {
+    if default_provider().install_default().is_err() {
         println!("Error loading Provider");
         return;
     }
@@ -63,6 +37,39 @@ async fn main() {
     startup();
     log_in!("Incoming messages");
     log_out!("Outgoing messages");
+
+    let identity_secret = match env::var("OMEGA_IDENTITY_SECRET") {
+        Ok(secret) if !secret.is_empty() => secret,
+        Ok(_) => {
+            log!("[FATAL] OMEGA_IDENTITY_SECRET must not be empty");
+            return;
+        }
+        Err(error) => {
+            log!("[FATAL] Unable to load OMEGA_IDENTITY_SECRET: {}", error);
+            return;
+        }
+    };
+    let identity_secret = Zeroizing::new(identity_secret);
+    let config = match OmegaConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            log!("[FATAL] Omega configuration is invalid: {}", error);
+            return;
+        }
+    };
+    if middleware::initialize_config(config.rate_limits.clone()).is_err() {
+        log!("[FATAL] Omega rate-limit configuration was initialized more than once");
+        return;
+    }
+    let identity = match identity::OmegaIdentity::load_or_create(identity_secret.as_bytes()) {
+        Ok(identity) => identity,
+        Err(error) => {
+            log!("[FATAL] Omega identity initialization failed: {}", error);
+            return;
+        }
+    };
+    drop(identity_secret);
+    let state = OmegaState::new(identity, config);
 
     log!("Started");
     log!("  .env");
@@ -96,7 +103,7 @@ async fn main() {
         .unwrap_or(443);
 
     tokio::select! {
-        result = omikron_connection::start(port, OmegaState::new()) => {
+        result = omikron_connection::start(port, state) => {
             if let Err(e) = result {
                 log_err!(0, PrintType::General, "Server error: {:?}", e);
             }

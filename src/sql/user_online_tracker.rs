@@ -275,10 +275,6 @@ impl PresenceTracker {
         Ok(())
     }
 
-    pub fn check_index_consistency(&self) -> Result<(), String> {
-        Self::check_indices(&self.routes.read().unwrap())
-    }
-
     pub fn set_preference(&self, user_id: i64, status: UserStatus) {
         self.preferences.write().unwrap().insert(user_id, status);
     }
@@ -335,14 +331,6 @@ impl PresenceTracker {
             })
     }
 
-    pub fn track_iota(&self, iota_id: i64, omikron_id: i64) {
-        self.connect_iota(iota_id, omikron_id);
-    }
-
-    pub fn untrack_iota(&self, iota_id: i64, omikron_id: i64) -> bool {
-        self.disconnect_iota(iota_id, omikron_id)
-    }
-
     pub fn track_session(&self, user_id: i64, session_id: i64, omikron_id: i64, iota_id: i64) {
         let mut routes = self.routes.write().unwrap();
         Self::insert_session_locked(
@@ -371,15 +359,6 @@ impl PresenceTracker {
             .sessions
             .get(&(user_id, session_id))
             .is_some_and(|route| route.omikron_id == omikron_id)
-    }
-
-    pub fn session_route(&self, user_id: i64, session_id: i64) -> Option<ClientSessionRoute> {
-        self.routes
-            .read()
-            .unwrap()
-            .sessions
-            .get(&(user_id, session_id))
-            .map(|route| route.clone())
     }
 
     pub fn resolve_public_state(&self, user_id: i64, iota_id: i64) -> UserStatus {
@@ -496,12 +475,6 @@ impl PresenceTracker {
         Self::debug_assert_indices(&routes);
     }
 
-    pub fn remove_subscription(&self, user_id: i64, session_id: i64) {
-        let mut routes = self.routes.write().unwrap();
-        Self::remove_subscription_locked(&mut routes, (user_id, session_id));
-        Self::debug_assert_indices(&routes);
-    }
-
     pub fn subscribers(&self, target_user_id: i64) -> Vec<PresenceSubscriber> {
         let mut subscribers = self
             .routes
@@ -540,15 +513,6 @@ impl PresenceTracker {
             .collect::<Vec<_>>();
         sessions.sort_by_key(|(user_id, session_id, _)| (*user_id, *session_id));
         sessions
-    }
-
-    pub fn replace_routes_owned_by(
-        &self,
-        omikron_id: i64,
-        iota_ids: &[i64],
-        sessions: &[(i64, i64, i64)],
-    ) {
-        self.replace_omikron_snapshot(omikron_id, iota_ids, sessions);
     }
 
     pub fn replace_omikron_snapshot(
@@ -621,10 +585,6 @@ impl PresenceTracker {
         )
     }
 
-    pub fn track_iota_connection(&self, iota_id: i64, omikron_id: i64, primary: bool) {
-        self.connect_iota_with_priority(iota_id, omikron_id, primary);
-    }
-
     pub fn untrack_iota_connection(&self, iota_id: i64, omikron_id: i64) -> bool {
         let connections_empty = self.disconnect_iota(iota_id, omikron_id);
         self.remove_sessions_for_iota(iota_id, omikron_id);
@@ -669,29 +629,6 @@ impl PresenceTracker {
             .collect::<Vec<_>>();
         user_routes.sort_by_key(|(session_id, route)| (*session_id, route.omikron_id));
         user_routes.into_iter().map(|(_, route)| route).collect()
-    }
-
-    pub fn sessions_for_user(&self, user_id: i64) -> Vec<(i64, ClientSessionRoute)> {
-        let routes = self.routes.read().unwrap();
-        let mut sessions = routes
-            .indices
-            .sessions_by_user
-            .get(&user_id)
-            .into_iter()
-            .flat_map(|session_ids| session_ids.iter())
-            .filter_map(|session_id| {
-                routes
-                    .sessions
-                    .get(&(user_id, *session_id))
-                    .map(|route| (*session_id, route.clone()))
-            })
-            .collect::<Vec<_>>();
-        sessions.sort_by_key(|(session_id, route)| (*session_id, route.omikron_id));
-        sessions
-    }
-
-    pub fn route_for_session(&self, user_id: i64, session_id: i64) -> Option<ClientSessionRoute> {
-        self.session_route(user_id, session_id)
     }
 
     pub fn user_route(&self, user_id: i64) -> Option<ClientSessionRoute> {
@@ -745,16 +682,16 @@ impl PresenceTracker {
         }
         result
     }
-
-    pub fn remove_omikron_and_offline_users(&self, omikron_id: i64) -> RemovedOmikronState {
-        self.remove_omikron(omikron_id)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ClientSessionRoute, PresenceTracker};
     use crate::sql::connection_status::UserStatus;
+
+    fn check_index_consistency(tracker: &PresenceTracker) -> Result<(), String> {
+        PresenceTracker::check_indices(&tracker.routes.read().unwrap())
+    }
 
     #[test]
     fn effective_state_is_derived_from_routes_and_preference() {
@@ -765,7 +702,7 @@ mod tests {
             UserStatus::iota_offline
         );
 
-        tracker.track_iota(11, 42);
+        tracker.connect_iota(11, 42);
         assert_eq!(
             tracker.resolve_public_state(7, 11),
             UserStatus::user_offline
@@ -783,7 +720,7 @@ mod tests {
     #[test]
     fn session_must_match_assigned_iota_and_live_route() {
         let tracker = PresenceTracker::default();
-        tracker.track_iota(11, 42);
+        tracker.connect_iota(11, 42);
         tracker.track_session(7, 3, 42, 12);
         assert!(!tracker.has_active_session_for_iota(7, 11));
         assert_eq!(
@@ -807,7 +744,7 @@ mod tests {
     #[test]
     fn resolver_covers_all_public_preference_states() {
         let tracker = PresenceTracker::default();
-        tracker.track_iota(11, 42);
+        tracker.connect_iota(11, 42);
         tracker.track_session(7, 3, 42, 11);
 
         for (preference, expected) in [
@@ -826,14 +763,20 @@ mod tests {
     fn session_routes_replace_by_session_without_replacing_preferences() {
         let tracker = PresenceTracker::default();
         tracker.set_preference(7, UserStatus::user_dnd);
-        tracker.track_iota(11, 42);
-        tracker.track_iota(12, 43);
+        tracker.connect_iota(11, 42);
+        tracker.connect_iota(12, 43);
         tracker.track_session(7, 3, 42, 11);
         tracker.track_session(7, 4, 43, 12);
 
         assert_eq!(tracker.preference(7), UserStatus::user_dnd);
         assert_eq!(
-            tracker.session_route(7, 3),
+            tracker
+                .routes
+                .read()
+                .unwrap()
+                .sessions
+                .get(&(7, 3))
+                .cloned(),
             Some(ClientSessionRoute {
                 omikron_id: 42,
                 iota_id: 11,
@@ -865,21 +808,21 @@ mod tests {
     #[test]
     fn losing_one_iota_route_keeps_iota_online() {
         let tracker = PresenceTracker::default();
-        tracker.track_iota(11, 42);
-        tracker.track_iota(11, 43);
+        tracker.connect_iota(11, 42);
+        tracker.connect_iota(11, 43);
         assert!(tracker.has_iota_route(11));
 
-        assert!(!tracker.untrack_iota(11, 42));
+        assert!(!tracker.disconnect_iota(11, 42));
         assert!(tracker.has_iota_route(11));
-        assert!(tracker.untrack_iota(11, 43));
+        assert!(tracker.disconnect_iota(11, 43));
         assert!(!tracker.has_iota_route(11));
     }
 
     #[test]
     fn iota_connection_routes_track_primary_and_replacement() {
         let tracker = PresenceTracker::default();
-        tracker.track_iota_connection(11, 42, true);
-        tracker.track_iota_connection(11, 43, false);
+        tracker.connect_iota(11, 42);
+        tracker.connect_iota(11, 43);
 
         assert_eq!(tracker.iota_connections(11), Some(vec![42, 43]));
         assert_eq!(tracker.primary_iota_route(11), Some(42));
@@ -961,8 +904,8 @@ mod tests {
     #[test]
     fn active_session_can_use_one_of_several_live_iota_routes() {
         let tracker = PresenceTracker::default();
-        tracker.track_iota(11, 42);
-        tracker.track_iota(11, 43);
+        tracker.connect_iota(11, 42);
+        tracker.connect_iota(11, 43);
         tracker.track_session(7, 3, 43, 11);
 
         assert!(tracker.has_active_session_for_iota(7, 11));
@@ -973,13 +916,13 @@ mod tests {
     #[test]
     fn route_snapshot_replaces_only_one_omikron() {
         let tracker = PresenceTracker::default();
-        tracker.track_iota(11, 42);
-        tracker.track_iota(12, 43);
+        tracker.connect_iota(11, 42);
+        tracker.connect_iota(12, 43);
         tracker.track_session(7, 3, 42, 11);
         tracker.track_session(8, 4, 43, 12);
         tracker.replace_subscription(7, 3, 42, vec![20]);
 
-        tracker.replace_routes_owned_by(42, &[12], &[(9, 5, 12)]);
+        tracker.replace_omikron_snapshot(42, &[12], &[(9, 5, 12)]);
 
         assert!(!tracker.owns_session(7, 3, 42));
         assert!(tracker.owns_session(8, 4, 43));
@@ -992,8 +935,8 @@ mod tests {
     fn omikron_cleanup_preserves_other_routes_and_preferences() {
         let tracker = PresenceTracker::default();
         tracker.set_preference(7, UserStatus::user_dnd);
-        tracker.track_iota(11, 42);
-        tracker.track_iota(11, 43);
+        tracker.connect_iota(11, 42);
+        tracker.connect_iota(11, 43);
         tracker.track_session(7, 3, 42, 11);
         tracker.track_session(7, 4, 43, 11);
         tracker.replace_subscription(7, 3, 42, vec![20]);
@@ -1036,14 +979,14 @@ mod tests {
                 .cloned(),
             Some([20, 21].into_iter().collect())
         );
-        assert!(tracker.check_index_consistency().is_ok());
+        assert!(check_index_consistency(&tracker).is_ok());
 
         tracker.replace_subscription(7, 3, 42, vec![22]);
         assert!(tracker.subscribers(20).is_empty());
         assert!(tracker.subscribers(21).is_empty());
         assert_eq!(tracker.subscribers(22).len(), 1);
         tracker.remove_session(7, 3, 42);
-        assert!(tracker.check_index_consistency().is_ok());
+        assert!(check_index_consistency(&tracker).is_ok());
         assert!(
             tracker
                 .routes
@@ -1076,7 +1019,7 @@ mod tests {
         assert_eq!(removed.iota_ids, vec![11]);
         assert_eq!(removed.session_user_ids, vec![7]);
         assert_eq!(removed.subscriber_sessions, vec![(7, 3)]);
-        assert!(tracker.check_index_consistency().is_ok());
+        assert!(check_index_consistency(&tracker).is_ok());
     }
 
     #[test]
@@ -1093,6 +1036,6 @@ mod tests {
             .unwrap()
             .clear();
 
-        assert!(tracker.check_index_consistency().is_err());
+        assert!(check_index_consistency(&tracker).is_err());
     }
 }

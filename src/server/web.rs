@@ -1,0 +1,47 @@
+use crate::identity::OmegaIdentity;
+use crate::server::{api, index::index_handler};
+use mtp::webserver::{HttpRequest, HttpResponse, RouteParams, WebServerConfig};
+use std::{future::Future, pin::Pin, sync::Arc};
+
+type RouteFuture = Pin<Box<dyn Future<Output = HttpResponse> + Send>>;
+
+fn api_handler(
+    identity: Arc<OmegaIdentity>,
+) -> impl Fn(HttpRequest, HttpResponse) -> RouteFuture + Send + Sync + 'static {
+    move |request, response| Box::pin(api::handle(request, response, identity.clone()))
+}
+
+fn api_pattern_handler(
+    identity: Arc<OmegaIdentity>,
+) -> impl Fn(HttpRequest, HttpResponse, RouteParams) -> RouteFuture + Send + Sync + 'static {
+    move |request, response, params| {
+        Box::pin(api::handle_pattern(
+            request,
+            response,
+            params,
+            identity.clone(),
+        ))
+    }
+}
+
+pub fn build_web_config(
+    identity: Arc<OmegaIdentity>,
+) -> Result<WebServerConfig, mtp::webserver::RouterError> {
+    WebServerConfig::new()
+        .route("/api/download/iota_frontend", api_handler(identity.clone()))?
+        .route("/api/get/omikron", api_handler(identity.clone()))?
+        .route("/api/get/connections", api_handler(identity.clone()))?
+        .route("/api/get/public_key", api_handler(identity.clone()))?
+        .route_pattern(
+            "/api/get/omikron/{id}",
+            api_pattern_handler(identity.clone()),
+        )?
+        .route_pattern("/api/get/iota/{id}", api_pattern_handler(identity.clone()))?
+        .route_pattern(
+            "/api/get/id/{username}",
+            api_pattern_handler(identity.clone()),
+        )?
+        .route_pattern("/api/get/user/{id}", api_pattern_handler(identity.clone()))?
+        .route_pattern("/direct/{short}", api_pattern_handler(identity))?
+        .fallback(|_request, response| async move { index_handler(response) })
+}
