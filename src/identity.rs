@@ -1,7 +1,8 @@
 use crate::error::{IdentityError, Result};
 use mtp::crypto::{Keyring, PublicKeyBundle};
 use mtp::files::{
-    FileError, load_keyring, load_public_key_bundle, save_keyring, save_public_key_bundle,
+    FileError, load_keyring_raw, load_public_key_bundle, save_keyring_raw,
+    save_public_key_bundle,
 };
 use std::{
     fs,
@@ -22,25 +23,20 @@ pub struct OmegaIdentity {
 static PUBLIC_BUNDLE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl OmegaIdentity {
-    pub fn load_or_create(passphrase: &[u8]) -> Result<Self> {
-        Self::load_or_create_at(
-            Path::new(KEYRING_PATH),
-            Path::new(PUBLIC_KEY_PATH),
-            passphrase,
-        )
+    pub fn load_or_create() -> Result<Self> {
+        Self::load_or_create_at(Path::new(KEYRING_PATH), Path::new(PUBLIC_KEY_PATH))
     }
 
     pub(crate) fn load_or_create_at(
         keyring_path: impl AsRef<Path>,
         public_key_path: impl AsRef<Path>,
-        passphrase: &[u8],
     ) -> Result<Self> {
         let keyring_path = keyring_path.as_ref();
         let public_key_path = public_key_path.as_ref();
-        let keyring = match load_keyring(keyring_path, passphrase) {
+        let keyring = match load_keyring_raw(keyring_path) {
             Ok(keyring) => keyring,
             Err(FileError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Self::create_at(keyring_path, public_key_path, passphrase);
+                return Self::create_at(keyring_path, public_key_path);
             }
             Err(error) => {
                 return Err(IdentityError::Storage {
@@ -72,9 +68,9 @@ impl OmegaIdentity {
         Ok(identity)
     }
 
-    fn create_at(keyring_path: &Path, public_key_path: &Path, passphrase: &[u8]) -> Result<Self> {
+    fn create_at(keyring_path: &Path, public_key_path: &Path) -> Result<Self> {
         let keyring = Keyring::generate();
-        save_keyring(&keyring, keyring_path, passphrase).map_err(|error| {
+        save_keyring_raw(&keyring, keyring_path).map_err(|error| {
             IdentityError::Storage {
                 path: keyring_path.to_path_buf(),
                 source: error,
@@ -188,9 +184,7 @@ mod tests {
         let directory = test_directory();
         let keyring_path = directory.join("omega.mk");
         let public_key_path = directory.join("omega.mpkb");
-        let passphrase = b"test-passphrase";
-
-        let first = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase)
+        let first = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
             .expect("create identity");
         let first_bundle = first.public_key_bundle().try_as_bytes().expect("bundle");
 
@@ -199,9 +193,8 @@ mod tests {
         assert_eq!(&keyring_bytes[..4], b"MTMK");
         assert_eq!(&bundle_bytes[..4], b"MPKB");
 
-        let restarted =
-            OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase)
-                .expect("reload identity");
+        let restarted = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
+            .expect("reload identity");
         assert_eq!(
             restarted
                 .public_key_bundle()
@@ -227,8 +220,7 @@ mod tests {
         let public_key_path = directory.join("omega.mpkb");
         fs::write(&keyring_path, b"not-a-keyring").expect("write invalid keyring");
 
-        let result =
-            OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, b"test-passphrase");
+        let result = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path);
         assert!(result.is_err());
         assert!(!public_key_path.exists());
 
@@ -240,16 +232,13 @@ mod tests {
         let directory = test_directory();
         let keyring_path = directory.join("omega.mk");
         let public_key_path = directory.join("omega.mpkb");
-        let passphrase = b"test-passphrase";
-
-        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase)
+        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
             .expect("create identity");
         let original_keyring = fs::read(&keyring_path).expect("read keyring");
         fs::remove_file(&public_key_path).expect("remove bundle");
 
-        let repaired =
-            OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase)
-                .expect("repair bundle");
+        let repaired = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
+            .expect("repair bundle");
 
         assert_eq!(
             fs::read(&keyring_path).expect("read keyring"),
@@ -271,16 +260,14 @@ mod tests {
         let directory = test_directory();
         let keyring_path = directory.join("omega.mk");
         let public_key_path = directory.join("omega.mpkb");
-        let passphrase = b"test-passphrase";
-
-        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase)
+        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
             .expect("create identity");
         let other_keyring = Keyring::generate();
         save_public_key_bundle(&other_keyring.public_key_bundle(), &public_key_path)
             .expect("save mismatched bundle");
 
         assert!(matches!(
-            OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase),
+            OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path),
             Err(crate::OmegaError::Identity(
                 IdentityError::PublicBundleMismatch { .. }
             ))
@@ -290,23 +277,27 @@ mod tests {
     }
 
     #[test]
-    fn wrong_passphrase_does_not_replace_existing_keyring() {
+    fn existing_raw_keyring_is_reloaded_without_a_passphrase() {
         let directory = test_directory();
         let keyring_path = directory.join("omega.mk");
         let public_key_path = directory.join("omega.mpkb");
-        let passphrase = b"test-passphrase";
 
-        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, passphrase)
+        let first = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
             .expect("create identity");
         let original_keyring = fs::read(&keyring_path).expect("read keyring");
 
-        assert!(
-            OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path, b"wrong-passphrase")
-                .is_err()
-        );
+        let reloaded = OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
+            .expect("reload identity");
         assert_eq!(
             fs::read(&keyring_path).expect("read keyring"),
             original_keyring
+        );
+        assert_eq!(
+            reloaded
+                .public_key_bundle()
+                .try_as_bytes()
+                .expect("bundle"),
+            first.public_key_bundle().try_as_bytes().expect("bundle")
         );
 
         fs::remove_dir_all(directory).expect("remove test directory");

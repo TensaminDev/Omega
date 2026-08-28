@@ -54,6 +54,14 @@ pub async fn register_complete_iota(id: IotaId, public_key: PublicKeyBundle) -> 
     Ok(())
 }
 
+pub async fn change_iota_key(id: IotaId, key: PublicKeyBundle) -> Result<()> {
+    sqlx::query("UPDATE iotas SET public_key = ? WHERE id = ?")
+        .bind(key.try_as_bytes()?)
+        .bind(id.0)
+        .execute(&pool().await?)
+        .await?;
+    Ok(())
+}
 pub async fn delete_iota(id: IotaId) -> Result<()> {
     sqlx::query("DELETE FROM iotas WHERE id = ?")
         .bind(id.0)

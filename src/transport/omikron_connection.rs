@@ -764,8 +764,9 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchClass, OmikronConnection};
+    use super::{DispatchClass, OmikronConnection, parse_bind_address};
     use mtp::codec::{CommunicationType, CommunicationValue};
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn relay_dispatch_is_not_on_the_ordered_state_lane() {
@@ -773,6 +774,14 @@ mod tests {
         assert_eq!(
             OmikronConnection::dispatch_class(&value),
             DispatchClass::Concurrent
+        );
+    }
+
+    #[test]
+    fn parses_configured_bind_address() {
+        assert_eq!(
+            parse_bind_address(Some("10.200.2.0")),
+            Ok(IpAddr::V4(Ipv4Addr::new(10, 200, 2, 0)))
         );
     }
 
@@ -805,5 +814,13 @@ mod tests {
         assert!(!OmikronConnection::correlation_response(
             &CommunicationValue::new(CommunicationType::GetUserData).with_id(1)
         ));
+    }
+
+    #[test]
+    fn defaults_bind_address_to_all_interfaces() {
+        assert_eq!(
+            parse_bind_address(None),
+            Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+        );
     }
 }

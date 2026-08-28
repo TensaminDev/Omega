@@ -25,7 +25,6 @@ use std::env;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::interval;
-use zeroize::Zeroizing;
 
 #[tokio::main]
 async fn main() {
@@ -38,18 +37,6 @@ async fn main() {
     log_in!("Incoming messages");
     log_out!("Outgoing messages");
 
-    let identity_secret = match env::var("OMEGA_IDENTITY_SECRET") {
-        Ok(secret) if !secret.is_empty() => secret,
-        Ok(_) => {
-            log!("[FATAL] OMEGA_IDENTITY_SECRET must not be empty");
-            return;
-        }
-        Err(error) => {
-            log!("[FATAL] Unable to load OMEGA_IDENTITY_SECRET: {}", error);
-            return;
-        }
-    };
-    let identity_secret = Zeroizing::new(identity_secret);
     let config = match OmegaConfig::from_env() {
         Ok(config) => config,
         Err(error) => {
@@ -61,14 +48,13 @@ async fn main() {
         log!("[FATAL] Omega rate-limit configuration was initialized more than once");
         return;
     }
-    let identity = match identity::OmegaIdentity::load_or_create(identity_secret.as_bytes()) {
+    let identity = match identity::OmegaIdentity::load_or_create() {
         Ok(identity) => identity,
         Err(error) => {
             log!("[FATAL] Omega identity initialization failed: {}", error);
             return;
         }
     };
-    drop(identity_secret);
     let state = OmegaState::new(identity, config);
 
     log!("Started");
