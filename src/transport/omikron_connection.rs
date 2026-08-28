@@ -394,9 +394,7 @@ impl OmikronConnection {
             let request_id = value.id();
             let result = crate::transport::relay_router::route_from_omikron(id, value).await;
             let response = match &result {
-                Ok(()) => request_id.map(|request_id| {
-                    CommunicationValue::new(CommunicationType::Success).with_id(request_id)
-                }),
+                Ok(response) => request_id.map(|request_id| response.clone().with_id(request_id)),
                 Err(error) => {
                     log_err!(id, PrintType::Omega, "Relay routing failed: {}", error);
                     request_id.map(|request_id| {
@@ -417,7 +415,9 @@ impl OmikronConnection {
                     send_error
                 );
             }
-            return result.map_err(|error| crate::error::OmegaError::Transport(error.to_string()));
+            return result
+                .map(|_| ())
+                .map_err(|error| crate::error::OmegaError::Transport(error.to_string()));
         }
         match value.get_comm_type_enum() {
             Some(CommunicationType::ShortenLink) => {

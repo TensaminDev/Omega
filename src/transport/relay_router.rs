@@ -82,7 +82,7 @@ pub fn error_response_type(error: &RelayRouteError) -> CommunicationType {
 pub async fn route_from_omikron(
     source_omikron_id: i64,
     frame: CommunicationValue,
-) -> Result<(), RelayRouteError> {
+) -> Result<CommunicationValue, RelayRouteError> {
     let frame = ensure_relay_frame_id(frame);
     if !frame.is_type(CommunicationType::Relay) {
         return Err(RelayRouteError::Relay(RelayError::NotRelay));
@@ -154,7 +154,7 @@ pub async fn route_from_omikron(
             RelayRouteError::Send(error.to_string())
         })?;
     if response.is_type(CommunicationType::Success) {
-        Ok(())
+        Ok(response)
     } else {
         Err(RelayRouteError::Send(format!(
             "destination Omikron rejected the Relay with {}",
