@@ -27,6 +27,7 @@ target
 # Added by cargo
 
 /target
+/certs
 
 *.mk
 *.mpkb

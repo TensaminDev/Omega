@@ -144,7 +144,7 @@
               bindAddress = lib.mkOption {
                 type = lib.types.str;
                 default = "0.0.0.0";
-                description = "IP address to bind the HTTP/API server to.";
+                description = "IP address to bind the MTP/QUIC server to.";
               };
 
               openFirewall = lib.mkOption {

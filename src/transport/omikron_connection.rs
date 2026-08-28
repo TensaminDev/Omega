@@ -15,7 +15,7 @@ use mtp::{
     webserver::{MTPWebServer, WebMtpReceiver, WebMtpSender},
 };
 use std::{
-    net::{IpAddr, Ipv4Addr},
+    net::IpAddr,
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -30,10 +30,18 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_WAITING_AGE: Duration = Duration::from_secs(60);
+const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0";
 static ACTIVE_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 static NEXT_CORRELATION_ID: AtomicU32 = AtomicU32::new(1);
 static ACTIVE_CONNECTIONS_BY_IP: once_cell::sync::Lazy<DashMap<IpAddr, usize>> =
     once_cell::sync::Lazy::new(DashMap::new);
+
+fn parse_bind_address(value: Option<&str>) -> Result<IpAddr, std::net::AddrParseError> {
+    value
+        .unwrap_or(DEFAULT_BIND_ADDRESS)
+        .trim()
+        .parse::<IpAddr>()
+}
 
 struct ConnectionLimitGuard(Option<IpAddr>);
 impl Drop for ConnectionLimitGuard {
@@ -666,7 +674,7 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
     let web_config = server::web::build_web_config(state.identity.clone())?
         .serve_tcp_https(true)
         .max_tcp_connections(256);
-    let ip = IpAddr::from(Ipv4Addr::new(0, 0, 0, 0));
+    let ip = parse_bind_address(std::env::var("BIND_ADDRESS").ok().as_deref())?;
     let host_config = HostConfig::new(ip, port, cert_pem, key_pem)
         .with_policy(Policy {
             send_mode: SendMode::SingleStreamPerMessage,

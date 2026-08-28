@@ -1,0 +1,44 @@
+Dear Snap Data Protection Officer,
+
+I am writing to exercise my right to erasure under Article 17 of the GDPR in relation to two Snapchat accounts that belong to me:
+
+alexemmet
+
+alex_emmet
+
+I previously contacted Snapchat Support through X, formerly Twitter, because I was unable to identify a functioning general support email address or reach a human support representative through the available support channels.
+
+In my message through X, I explained that I am requesting deletion of both accounts and the personal data associated with them.
+
+I still have access to the login credentials for alexemmet and can verify ownership of that account through the normal account-access process.
+
+For alex_emmet, I no longer have access to the old device, email address, or phone number that may have been associated with the account. The account was created when I was under 18.
+
+Snapchat Support responded through X that it could not take action where a user does not know, or no longer has access to, the email address or phone number associated with an account.
+
+I would like to clarify that I am not requesting account recovery, a password reset, or restored access to alex_emmet. I am making a data-subject request for erasure of my personal data.
+
+I understand that Snap is entitled to verify my identity before acting on this request. Under Article 12(6) GDPR, where there are reasonable doubts concerning the identity of the person making a request, the controller may request additional information necessary to confirm the person's identity.
+
+I am therefore asking Snap to provide an alternative means of verifying that I am the data subject associated with alex_emmet, given that I no longer have access to the original device, email address, or phone number. I am willing to provide reasonable information necessary for verification through a secure channel.
+
+My request covers:
+
+deletion of the Snapchat account alexemmet;
+
+deletion of the Snapchat account alex_emmet;
+
+erasure of personal data associated with both accounts;
+
+erasure of personal data contained in previous support correspondence, support tickets, attachments, account-recovery records, and associated metadata concerning me.
+
+If Snap considers that any of this data must be retained, please identify the categories of data being retained, the legal basis for retention, and the applicable retention period.
+
+If Snap considers that it cannot comply with the erasure request for alex_emmet, please provide the specific reason for that decision and explain why no alternative method of verifying my identity is available.
+
+I would also appreciate confirmation that this request is being handled as a GDPR data-subject request rather than as an account-recovery request.
+
+I can provide screenshots of my correspondence with Snapchat Support through X if required.
+
+Kind regards,
+Alex
