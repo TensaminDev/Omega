@@ -64,6 +64,10 @@ pub async fn get_user(
             DataValue::Str(user.public_key.try_to_base64()?),
         )
         .add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()))
+        .add_typed_default(
+            DataType::CreatedAt,
+            DataValue::SignedNumber(user.created_at.into()),
+        )
         .add_typed_default(DataType::Display, DataValue::Str(display))
         .add_typed_default(
             DataType::SubLevel,

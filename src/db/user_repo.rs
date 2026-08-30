@@ -101,9 +101,9 @@ pub(crate) fn is_duplicate_key(error: &sqlx::Error) -> bool {
     })
 }
 
-const USER_BY_USERNAME_QUERY: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE username = ?";
-const USER_BY_ID_QUERY: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token FROM users WHERE id = ?";
-const USER_COLUMNS: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token FROM users";
+const USER_BY_USERNAME_QUERY: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token, CAST(UNIX_TIMESTAMP(created_at) * 1000 AS SIGNED) AS created_at FROM users WHERE username = ?";
+const USER_BY_ID_QUERY: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token, CAST(UNIX_TIMESTAMP(created_at) * 1000 AS SIGNED) AS created_at FROM users WHERE id = ?";
+const USER_COLUMNS: &str = "SELECT id, iota_id, username, display, status, presence_preference, about, avatar, sub_level, sub_end, public_key, token, CAST(UNIX_TIMESTAMP(created_at) * 1000 AS SIGNED) AS created_at FROM users";
 
 #[derive(FromRow)]
 struct UserRow {
@@ -119,6 +119,7 @@ struct UserRow {
     sub_end: i64,
     public_key: Vec<u8>,
     token: Vec<u8>,
+    created_at: i64,
 }
 
 impl TryFrom<UserRow> for User {
@@ -142,6 +143,7 @@ impl TryFrom<UserRow> for User {
             sub_end: row.sub_end,
             public_key,
             token: decode(row.token)?,
+            created_at: row.created_at,
         })
     }
 }

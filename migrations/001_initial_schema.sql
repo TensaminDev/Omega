@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users (
     sub_end BIGINT NOT NULL DEFAULT 0,
     public_key BLOB NOT NULL,
     token BLOB NOT NULL,
+    created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
     UNIQUE KEY uk_users_username (username),
     KEY idx_users_iota_id (iota_id),

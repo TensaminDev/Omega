@@ -17,4 +17,5 @@ pub struct User {
     pub public_key: PublicKeyBundle,
     #[serde(skip_serializing)]
     pub token: String,
+    pub created_at: i64,
 }
