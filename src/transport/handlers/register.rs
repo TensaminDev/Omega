@@ -135,6 +135,17 @@ pub async fn complete_user(
     .await
     {
         Ok(()) => {
+            if let Err(error) =
+                crate::transport::omikron_manager::publish_iota_user_snapshot(iota_id).await
+            {
+                crate::log_in!(
+                    crate::util::logger::PrintType::General,
+                    "Could not publish Iota snapshot after registering user {} on Iota {}: {}",
+                    user_id,
+                    iota_id,
+                    error
+                );
+            }
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::Success)

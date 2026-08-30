@@ -449,9 +449,6 @@ impl OmikronConnection {
             Some(CommunicationType::ChangeUserData) => {
                 crate::transport::handlers::user_data::change_user(self, value).await
             }
-            Some(CommunicationType::ChangeIotaData) => {
-                crate::transport::handlers::user_data::change_iota(self, value).await
-            }
             Some(CommunicationType::GetRegister) => {
                 crate::transport::handlers::register::get_register(self, value).await
             }

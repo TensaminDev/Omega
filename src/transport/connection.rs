@@ -73,7 +73,6 @@ pub(crate) fn validate_dispatch_fields(value: &CommunicationValue) -> OmikronRes
         message_type,
         mtp::codec::CommunicationType::GetUserData
             | mtp::codec::CommunicationType::ChangeUserData
-            | mtp::codec::CommunicationType::ChangeIotaData
             | mtp::codec::CommunicationType::DeleteUser
             | mtp::codec::CommunicationType::AttachUserBegin
             | mtp::codec::CommunicationType::AttachUserComplete
@@ -147,7 +146,6 @@ mod tests {
         for message_type in [
             CommunicationType::GetUserData,
             CommunicationType::ChangeUserData,
-            CommunicationType::ChangeIotaData,
             CommunicationType::DeleteUser,
             CommunicationType::AttachUserBegin,
             CommunicationType::AttachUserComplete,

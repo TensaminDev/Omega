@@ -1,6 +1,8 @@
 use http::StatusCode;
 use mtp::webserver::HttpResponse;
 
+use crate::server::with_cors;
+
 pub fn index_handler(response: HttpResponse) -> HttpResponse {
     let documentation = r#"
 Omega API Server
@@ -33,8 +35,10 @@ live in-memory state; it is empty after an Omega restart until Omikrons sync.
 All other routes will return this documentation.
 "#;
 
-    response
-        .status(StatusCode::OK)
-        .header("content-type", "text/plain; charset=utf-8")
-        .body(documentation)
+    with_cors(
+        response
+            .status(StatusCode::OK)
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(documentation),
+    )
 }

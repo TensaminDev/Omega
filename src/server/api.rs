@@ -13,6 +13,7 @@ use crate::models::UserId;
 use crate::server::{
     middleware,
     validation::{parse_positive_id, validate_non_empty},
+    with_cors,
 };
 use crate::transport::omikron_manager::{
     get_all_connections, get_connected_omikron, get_iota_primary_omikron_connection,
@@ -193,39 +194,34 @@ pub async fn handle(
     let method = request.method;
     let path = request.uri.path().to_string();
     if method != Method::OPTIONS && !middleware::allow(request.remote_addr.ip(), &path) {
-        return response
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .header("access-control-allow-origin", crate::config::cors_origin())
-            .body(json(&StatusResponse {
+        return with_cors(response.status(StatusCode::TOO_MANY_REQUESTS).body(json(
+            &StatusResponse {
                 status: "error_rate_limited",
-            }));
+            },
+        )));
     }
     if method == Method::OPTIONS {
-        return response
-            .status(StatusCode::OK)
-            .header("access-control-allow-origin", crate::config::cors_origin())
-            .header("access-control-allow-methods", "GET, POST, OPTIONS")
-            .header("access-control-allow-headers", "*");
+        return with_cors(response.status(StatusCode::NO_CONTENT));
     }
     let path_parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     if let ["api", "download", "iota_frontend"] = path_parts.as_slice() {
         let file_path = format!("{}/downloads/iota_frontend.zip", get_directory());
         return match std::fs::read(file_path) {
-            Ok(bytes) => response
-                .status(StatusCode::OK)
-                .header("access-control-allow-origin", crate::config::cors_origin())
-                .header("content-type", "application/zip")
-                .header(
-                    "content-disposition",
-                    "attachment; filename=\"iota_frontend.zip\"",
-                )
-                .body(Bytes::from(bytes)),
-            Err(_) => response
-                .status(StatusCode::NOT_FOUND)
-                .header("access-control-allow-origin", crate::config::cors_origin())
-                .body(json(&StatusResponse {
+            Ok(bytes) => with_cors(
+                response
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/zip")
+                    .header(
+                        "content-disposition",
+                        "attachment; filename=\"iota_frontend.zip\"",
+                    )
+                    .body(Bytes::from(bytes)),
+            ),
+            Err(_) => with_cors(response.status(StatusCode::NOT_FOUND).body(json(
+                &StatusResponse {
                     status: "error_not_found",
-                })),
+                },
+            ))),
         };
     }
     if let ["direct", short @ ..] = path_parts.as_slice() {
@@ -233,19 +229,16 @@ pub async fn handle(
         let location = crate::server::short_link::get_short_link(&short)
             .await
             .unwrap_or_else(|_| "https://tensamin.net".to_string());
-        return response
-            .status(StatusCode::TEMPORARY_REDIRECT)
-            .header("location", &location);
+        return with_cors(
+            response
+                .status(StatusCode::TEMPORARY_REDIRECT)
+                .header("location", &location),
+        );
     }
     let (status, body) = route(&path_parts, &identity)
         .await
         .unwrap_or_else(|error| (error.status_code(), error_body(&error)));
-    response
-        .status(status)
-        .header("access-control-allow-origin", crate::config::cors_origin())
-        .header("access-control-allow-headers", "*")
-        .header("access-control-allow-methods", "GET, POST, OPTIONS")
-        .body(body)
+    with_cors(response.status(status).body(body))
 }
 
 pub async fn handle_pattern(

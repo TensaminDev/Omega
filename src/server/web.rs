@@ -1,5 +1,6 @@
 use crate::identity::OmegaIdentity;
 use crate::server::{api, index::index_handler};
+use http::{Method, StatusCode};
 use mtp::webserver::{HttpRequest, HttpResponse, RouteParams, WebServerConfig};
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -43,5 +44,11 @@ pub fn build_web_config(
         )?
         .route_pattern("/api/get/user/{id}", api_pattern_handler(identity.clone()))?
         .route_pattern("/direct/{short}", api_pattern_handler(identity))?
-        .fallback(|_request, response| async move { index_handler(response) })
+        .fallback(|request, response| async move {
+            if request.method == Method::OPTIONS {
+                crate::server::with_cors(response.status(StatusCode::NO_CONTENT))
+            } else {
+                index_handler(response)
+            }
+        })
 }

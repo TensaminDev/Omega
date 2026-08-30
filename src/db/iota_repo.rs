@@ -22,7 +22,7 @@ pub async fn get_iota_by_id(id: IotaId) -> Result<Iota> {
 
 pub async fn create_new_iota(public_key: PublicKeyBundle) -> Result<IotaId> {
     for _ in 0..16 {
-        let id = crate::db::user_repo::get_register_id().await?;
+        let id = crate::db::user_repo::generate_protocol_id();
         let iota_id = IotaId::from(id.0);
         match register_complete_iota(iota_id, public_key.clone()).await {
             Ok(()) => return Ok(iota_id),
@@ -54,14 +54,6 @@ pub async fn register_complete_iota(id: IotaId, public_key: PublicKeyBundle) -> 
     Ok(())
 }
 
-pub async fn change_iota_key(id: IotaId, key: PublicKeyBundle) -> Result<()> {
-    sqlx::query("UPDATE iotas SET public_key = ? WHERE id = ?")
-        .bind(key.try_as_bytes()?)
-        .bind(id.0)
-        .execute(&pool().await?)
-        .await?;
-    Ok(())
-}
 pub async fn delete_iota(id: IotaId) -> Result<()> {
     sqlx::query("DELETE FROM iotas WHERE id = ?")
         .bind(id.0)

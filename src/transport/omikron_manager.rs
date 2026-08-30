@@ -7,6 +7,9 @@ use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 use once_cell::sync::Lazy;
 use rand::prelude::IteratorRandom;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::task::JoinHandle;
+use tokio::time::interval;
 
 pub static OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Arc<OmikronConnection>>> =
     Lazy::new(DashMap::new);
@@ -23,6 +26,7 @@ pub async fn add_omikron(conn: Arc<OmikronConnection>) {
     if let Some(old) = OMIKRON_CONNECTIONS.insert(id, conn.clone()) {
         old.close().await;
     }
+    let _ = flush_iota_snapshot_outbox().await;
 }
 
 pub async fn remove_omikron(omikron_id: i64, connection: &Arc<OmikronConnection>) -> bool {
@@ -63,12 +67,18 @@ pub async fn get_all_connections()
                 .await
                 .map_err(|_| ())?;
             for user in users {
-                for route in state.presence.routes_for_user(user.id.0) {
-                    if let Some(iotas) = result.get_mut(&route.omikron_id)
-                        && let Some(iota_id) = user.iota_id
-                        && let Some(users) = iotas.get_mut(&iota_id.0)
+                if let Some(iota_id) = user.iota_id {
+                    for omikron_id in state
+                        .presence
+                        .iota_connections(iota_id.0)
+                        .unwrap_or_default()
                     {
-                        users.push(user.id.0);
+                        if let Some(users) = result
+                            .get_mut(&omikron_id)
+                            .and_then(|iotas| iotas.get_mut(&iota_id.0))
+                        {
+                            users.push(user.id.0);
+                        }
                     }
                 }
             }
@@ -115,19 +125,18 @@ pub async fn send_to_user(user_id: i64, cv: &CommunicationValue) {
     }
 }
 
-/// Publish the authoritative membership list after an attach, migration, or
-/// release. Omikron replaces its full local index from this snapshot.
-pub async fn publish_iota_user_snapshot(iota_id: i64) {
-    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else {
-        return;
-    };
-    let Some(connection) = get_connected_omikron(omikron_id) else {
-        return;
-    };
-    let Ok(users) = user_repo::get_users_by_iota_id(crate::models::IotaId::from(iota_id)).await
-    else {
-        return;
-    };
+/*
+ * Publish each Iota membership snapshot to every live relay route. Each
+ * Omikron keeps a local authorization index, so sending only a primary route
+ * leaves the remaining relays stale after registration or migration.
+ */
+pub async fn publish_iota_user_snapshot(iota_id: i64) -> OmikronResult<()> {
+    let state = get_state().ok_or(crate::error::OmegaError::NotConnected)?;
+    let omikron_ids = state
+        .presence
+        .iota_connections(iota_id)
+        .ok_or(crate::error::OmegaError::NotConnected)?;
+    let users = user_repo::get_users_by_iota_id(crate::models::IotaId::from(iota_id)).await?;
     let user_ids = users
         .into_iter()
         .map(|user| DataValue::SignedNumber(user.id.0.into()))
@@ -135,7 +144,54 @@ pub async fn publish_iota_user_snapshot(iota_id: i64) {
     let snapshot = CommunicationValue::new(CommunicationType::IotaUserData)
         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
         .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
-    let _ = connection.send(&snapshot).await;
+    for omikron_id in omikron_ids {
+        let connection =
+            get_connected_omikron(omikron_id).ok_or(crate::error::OmegaError::NotConnected)?;
+        connection.send(&snapshot).await?;
+    }
+    Ok(())
+}
+
+pub async fn flush_iota_snapshot_outbox() -> OmikronResult<()> {
+    for iota_id in user_repo::pending_iota_snapshots().await? {
+        match publish_iota_user_snapshot(iota_id.0).await {
+            Ok(()) => {
+                if let Err(error) = user_repo::complete_iota_snapshot(iota_id).await {
+                    crate::log_in!(
+                        crate::util::logger::PrintType::General,
+                        "Could not complete Iota snapshot outbox entry for {}: {}",
+                        iota_id.0,
+                        error
+                    );
+                }
+            }
+            Err(error) => {
+                crate::log_in!(
+                    crate::util::logger::PrintType::General,
+                    "Could not publish Iota snapshot for {}: {}",
+                    iota_id.0,
+                    error
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn spawn_iota_snapshot_outbox_worker() -> JoinHandle<()> {
+    tokio::spawn(async {
+        let mut retry = interval(Duration::from_secs(30));
+        loop {
+            retry.tick().await;
+            if let Err(error) = flush_iota_snapshot_outbox().await {
+                crate::log_in!(
+                    crate::util::logger::PrintType::General,
+                    "Could not load Iota snapshot outbox: {}",
+                    error
+                );
+            }
+        }
+    })
 }
 
 pub async fn deliver_pending_erasures(iota_id: i64) {

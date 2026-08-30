@@ -1,7 +1,7 @@
 # Omega
 The Omega is Tensamin's central Server. It maintains the centralized user Registry & manages Omikron useage.
 
-Omega requires the non-empty `OMEGA_IDENTITY_SECRET` environment variable at startup. On first start it creates the protected private identity at `./omega.mk` and the matching public bundle at `./omega.mpkb`. Existing identity files are loaded fail-closed, so a malformed keyring or mismatched public bundle stops startup. A missing public bundle is rebuilt from a valid private keyring without generating a new identity.
+On first start Omega creates an unencrypted private keyring at `./omega.mk` and the matching public bundle at `./omega.mpkb`. Existing identity files are loaded fail-closed, so a malformed keyring or mismatched public bundle stops startup. A missing public bundle is rebuilt from a valid private keyring without generating a new identity.
 
 ## MTP routing contract
 

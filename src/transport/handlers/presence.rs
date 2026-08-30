@@ -562,6 +562,15 @@ pub async fn sync_status(
         &affected_iota_ids.iter().copied().collect::<Vec<_>>(),
     )
     .await?;
+    if sessions.iter().any(|(user_id, _, iota_id)| {
+        !users
+            .iter()
+            .any(|user| user.id.0 == *user_id && user.iota_id == Some(IotaId::from(*iota_id)))
+    }) {
+        return connection
+            .send_error_response(request_id, CommunicationType::ErrorInvalidData)
+            .await;
+    }
     let user_ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();
     apply_preferences(
         &state,

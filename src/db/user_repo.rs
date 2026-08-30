@@ -11,22 +11,13 @@ use std::collections::HashMap;
 pub const MAX_PROTOCOL_ID: i64 = (1_i64 << 48) - 1;
 const ID_ALLOCATION_ATTEMPTS: usize = 16;
 
-pub async fn get_register_id() -> Result<UserId> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let ts = timestamp as i64;
-    if (1..=MAX_PROTOCOL_ID).contains(&ts) {
-        return Ok(UserId::from(ts));
+pub fn generate_protocol_id() -> UserId {
+    loop {
+        let value = rand::random::<u64>() & ((1_u64 << 48) - 1);
+        if value != 0 {
+            return UserId::from(value as i64);
+        }
     }
-
-    // Fall back to random if the timestamp is outside the 48-bit range.
-    let id = (rand::random::<u64>() & ((1_u64 << 48) - 1)) as i64;
-    Ok(UserId::from(id.max(1)))
 }
 
 pub fn valid_protocol_id(id: i64) -> bool {
@@ -42,8 +33,24 @@ pub async fn allocate_registration(iota_id: IotaId, request_id: u32) -> Result<(
         ));
     }
 
+    let database = pool().await?;
+    sqlx::query(
+        "UPDATE registration_leases SET request_id = NULL \
+         WHERE request_id IS NOT NULL AND expires_at < UTC_TIMESTAMP()",
+    )
+    .execute(&database)
+    .await?;
+
     for _ in 0..ID_ALLOCATION_ATTEMPTS {
-        let id = get_register_id().await?;
+        let id = generate_protocol_id();
+        let user_exists = sqlx::query("SELECT 1 FROM users WHERE id = ? LIMIT 1")
+            .bind(id.0)
+            .fetch_optional(&database)
+            .await?
+            .is_some();
+        if user_exists {
+            continue;
+        }
         let token = uuid::Uuid::new_v4().to_string();
         let result = sqlx::query(
             "INSERT INTO registration_leases (token, user_id, iota_id, request_id, expires_at) \
@@ -53,7 +60,7 @@ pub async fn allocate_registration(iota_id: IotaId, request_id: u32) -> Result<(
         .bind(id.0)
         .bind(iota_id.0)
         .bind(request_id)
-        .execute(&pool().await?)
+        .execute(&database)
         .await;
         match result {
             Ok(_) => return Ok((id, token)),
@@ -64,7 +71,7 @@ pub async fn allocate_registration(iota_id: IotaId, request_id: u32) -> Result<(
                 )
                 .bind(iota_id.0)
                 .bind(request_id)
-                .fetch_optional(&pool().await?)
+                .fetch_optional(&database)
                 .await?;
                 if let Some(existing) = existing {
                     let current: i8 = existing.get("current");
@@ -172,7 +179,7 @@ fn normalized_ids(ids: &[i64]) -> Vec<i64> {
     ids
 }
 
-fn append_in_clause(query: &mut QueryBuilder<'_, MySql>, ids: &[i64]) {
+fn append_in_clause(query: &mut QueryBuilder<MySql>, ids: &[i64]) {
     query.push("(");
     for (index, id) in ids.iter().enumerate() {
         if index > 0 {
@@ -183,7 +190,7 @@ fn append_in_clause(query: &mut QueryBuilder<'_, MySql>, ids: &[i64]) {
     query.push(")");
 }
 
-async fn fetch_users(mut query: QueryBuilder<'_, MySql>) -> Result<Vec<User>> {
+async fn fetch_users(mut query: QueryBuilder<MySql>) -> Result<Vec<User>> {
     query
         .build_query_as::<UserRow>()
         .fetch_all(&pool().await?)
@@ -336,20 +343,58 @@ pub async fn change_status(id: UserId, value: String) -> Result<()> {
 }
 
 pub async fn change_iota_id(id: UserId, value: Option<IotaId>) -> Result<()> {
+    let mut transaction = pool().await?.begin().await?;
+    let previous = sqlx::query("SELECT iota_id FROM users WHERE id = ? FOR UPDATE")
+        .bind(id.0)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(OmegaError::NotFound)?;
+    let previous_iota_id: Option<i64> = previous.get("iota_id");
     sqlx::query("UPDATE users SET iota_id = ? WHERE id = ?")
         .bind(value.map(|id| id.0))
         .bind(id.0)
+        .execute(&mut *transaction)
+        .await?;
+    if let Some(iota_id) = previous_iota_id {
+        enqueue_iota_snapshot(&mut transaction, iota_id).await?;
+    }
+    if let Some(iota_id) = value {
+        enqueue_iota_snapshot(&mut transaction, iota_id.0).await?;
+    }
+    transaction.commit().await?;
+    Ok(())
+}
+
+async fn enqueue_iota_snapshot(
+    transaction: &mut sqlx::Transaction<'_, MySql>,
+    iota_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO iota_snapshot_outbox (iota_id, updated_at) VALUES (?, UTC_TIMESTAMP()) \
+         ON DUPLICATE KEY UPDATE updated_at = VALUES(updated_at)",
+    )
+    .bind(iota_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+pub async fn pending_iota_snapshots() -> Result<Vec<IotaId>> {
+    let rows = sqlx::query("SELECT iota_id FROM iota_snapshot_outbox ORDER BY updated_at")
+        .fetch_all(&pool().await?)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| IotaId::from(row.get::<i64, _>("iota_id")))
+        .collect())
+}
+
+pub async fn complete_iota_snapshot(iota_id: IotaId) -> Result<()> {
+    sqlx::query("DELETE FROM iota_snapshot_outbox WHERE iota_id = ?")
+        .bind(iota_id.0)
         .execute(&pool().await?)
         .await?;
     Ok(())
-}
-pub async fn change_token(id: UserId, value: String) -> Result<()> {
-    update(
-        id,
-        "UPDATE users SET token = ? WHERE id = ?",
-        value.into_bytes(),
-    )
-    .await
 }
 /// Delete the central identity while retaining a durable instruction for the
 /// last hosting Iota. The pending row is intentionally independent of users:
@@ -488,6 +533,7 @@ pub async fn register_complete_user(
         }
     };
     result?;
+    enqueue_iota_snapshot(&mut transaction, iota_id.0).await?;
     sqlx::query("UPDATE registration_leases SET completed_at = UTC_TIMESTAMP() WHERE token = ?")
         .bind(&registration_token)
         .execute(&mut *transaction)
@@ -498,19 +544,20 @@ pub async fn register_complete_user(
 
 fn valid_username(username: &str) -> bool {
     !username.is_empty()
-        && username.chars().count() <= 15
-        && !username.chars().any(char::is_control)
-        && !username.contains(['/', '\\'])
+        && username.len() <= 15
+        && username
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_PROTOCOL_ID, get_register_id, valid_protocol_id};
+    use super::{MAX_PROTOCOL_ID, generate_protocol_id, valid_protocol_id};
 
     #[tokio::test]
     async fn generated_registration_ids_fit_the_mtp_wire_range() {
         for _ in 0..128 {
-            assert!(valid_protocol_id(get_register_id().await.unwrap().0));
+            assert!(valid_protocol_id(generate_protocol_id().0));
         }
         assert!(!valid_protocol_id(0));
         assert!(valid_protocol_id(MAX_PROTOCOL_ID));

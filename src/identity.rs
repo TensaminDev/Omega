@@ -1,8 +1,7 @@
 use crate::error::{IdentityError, Result};
 use mtp::crypto::{Keyring, PublicKeyBundle};
 use mtp::files::{
-    FileError, load_keyring_raw, load_public_key_bundle, save_keyring_raw,
-    save_public_key_bundle,
+    FileError, load_keyring_raw, load_public_key_bundle, save_keyring_raw, save_public_key_bundle,
 };
 use std::{
     fs,
@@ -70,11 +69,9 @@ impl OmegaIdentity {
 
     fn create_at(keyring_path: &Path, public_key_path: &Path) -> Result<Self> {
         let keyring = Keyring::generate();
-        save_keyring_raw(&keyring, keyring_path).map_err(|error| {
-            IdentityError::Storage {
-                path: keyring_path.to_path_buf(),
-                source: error,
-            }
+        save_keyring_raw(&keyring, keyring_path).map_err(|error| IdentityError::Storage {
+            path: keyring_path.to_path_buf(),
+            source: error,
         })?;
         Self::persist_public_bundle(&keyring.public_key_bundle(), public_key_path)?;
         Ok(Self {
@@ -232,8 +229,7 @@ mod tests {
         let directory = test_directory();
         let keyring_path = directory.join("omega.mk");
         let public_key_path = directory.join("omega.mpkb");
-        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
-            .expect("create identity");
+        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path).expect("create identity");
         let original_keyring = fs::read(&keyring_path).expect("read keyring");
         fs::remove_file(&public_key_path).expect("remove bundle");
 
@@ -260,8 +256,7 @@ mod tests {
         let directory = test_directory();
         let keyring_path = directory.join("omega.mk");
         let public_key_path = directory.join("omega.mpkb");
-        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path)
-            .expect("create identity");
+        OmegaIdentity::load_or_create_at(&keyring_path, &public_key_path).expect("create identity");
         let other_keyring = Keyring::generate();
         save_public_key_bundle(&other_keyring.public_key_bundle(), &public_key_path)
             .expect("save mismatched bundle");
@@ -293,10 +288,7 @@ mod tests {
             original_keyring
         );
         assert_eq!(
-            reloaded
-                .public_key_bundle()
-                .try_as_bytes()
-                .expect("bundle"),
+            reloaded.public_key_bundle().try_as_bytes().expect("bundle"),
             first.public_key_bundle().try_as_bytes().expect("bundle")
         );
 

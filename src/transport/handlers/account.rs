@@ -84,7 +84,7 @@ pub async fn release_from_iota(
     match user_repo::change_iota_id(user.id, None).await {
         Ok(()) => {
             if let Some(iota) = previous_iota {
-                crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
+                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
             }
             connection
                 .send(
@@ -225,9 +225,9 @@ pub async fn attach_complete(
     match user_repo::change_iota_id(user.id, Some(IotaId::from(requester))).await {
         Ok(()) => {
             if let Some(iota) = previous_iota.filter(|id| id.0 != requester) {
-                crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
+                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
             }
-            crate::transport::omikron_manager::publish_iota_user_snapshot(requester).await;
+            let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(requester).await;
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::Success)
@@ -252,7 +252,8 @@ async fn complete_delete(
         Ok(iota_id) => {
             let cleanup_pending = iota_id.is_some();
             if let Some(iota_id) = iota_id {
-                crate::transport::omikron_manager::publish_iota_user_snapshot(iota_id.0).await;
+                let _ =
+                    crate::transport::omikron_manager::publish_iota_user_snapshot(iota_id.0).await;
                 crate::transport::omikron_manager::deliver_pending_erasures(iota_id.0).await;
             }
             connection
