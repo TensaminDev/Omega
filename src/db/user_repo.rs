@@ -11,6 +11,105 @@ use std::collections::HashMap;
 pub const MAX_PROTOCOL_ID: i64 = (1_i64 << 48) - 1;
 const ID_ALLOCATION_ATTEMPTS: usize = 16;
 
+#[derive(Clone, Debug)]
+pub struct PendingIotaUserProvisioning {
+    pub user_id: UserId,
+    pub iota_id: IotaId,
+    pub invitation_id: String,
+    pub username: String,
+    pub public_key: PublicKeyBundle,
+}
+
+pub async fn create_invitation(
+    invitation_id: &str,
+    token_hash: &[u8],
+    iota_id: IotaId,
+) -> Result<()> {
+    if uuid::Uuid::parse_str(invitation_id).is_err()
+        || token_hash.len() != 32
+        || !valid_protocol_id(iota_id.0)
+    {
+        return Err(OmegaError::Validation("invalid invitation".into()));
+    }
+    sqlx::query(
+        "INSERT INTO user_invitations (invitation_id, token_hash, iota_id) VALUES (?, ?, ?)",
+    )
+    .bind(invitation_id)
+    .bind(token_hash)
+    .bind(iota_id.0)
+    .execute(&pool().await?)
+    .await?;
+    Ok(())
+}
+
+pub async fn revoke_invitation(invitation_id: &str, iota_id: IotaId) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE user_invitations SET state = 'revoked', revoked_at = UTC_TIMESTAMP() WHERE invitation_id = ? AND iota_id = ? AND state = 'pending'",
+    )
+    .bind(invitation_id)
+    .bind(iota_id.0)
+    .execute(&pool().await?)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn enqueue_iota_user_provisioning(
+    provisioning: &PendingIotaUserProvisioning,
+) -> Result<()> {
+    if !valid_protocol_id(provisioning.user_id.0)
+        || !valid_protocol_id(provisioning.iota_id.0)
+        || !valid_username(&provisioning.username)
+    {
+        return Err(OmegaError::Validation("invalid user provisioning".into()));
+    }
+    sqlx::query(
+        "INSERT INTO pending_iota_user_provisioning (user_id, iota_id, invitation_id, username, public_key) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(provisioning.user_id.0)
+    .bind(provisioning.iota_id.0)
+    .bind(&provisioning.invitation_id)
+    .bind(&provisioning.username)
+    .bind(provisioning.public_key.try_as_bytes()?)
+    .execute(&pool().await?)
+    .await?;
+    Ok(())
+}
+
+pub async fn pending_iota_user_provisioning(
+    iota_id: IotaId,
+) -> Result<Vec<PendingIotaUserProvisioning>> {
+    let rows = sqlx::query(
+        "SELECT user_id, iota_id, invitation_id, username, public_key FROM pending_iota_user_provisioning WHERE iota_id = ? ORDER BY created_at",
+    )
+    .bind(iota_id.0)
+    .fetch_all(&pool().await?)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            let public_key = PublicKeyBundle::from_bytes(&row.get::<Vec<u8>, _>("public_key"))
+                .map_err(|error| OmegaError::Validation(error.to_string()))?;
+            Ok(PendingIotaUserProvisioning {
+                user_id: UserId::from(row.get::<i64, _>("user_id")),
+                iota_id: IotaId::from(row.get::<i64, _>("iota_id")),
+                invitation_id: row.get("invitation_id"),
+                username: String::from_utf8(row.get::<Vec<u8>, _>("username"))
+                    .map_err(|error| OmegaError::Validation(error.to_string()))?,
+                public_key,
+            })
+        })
+        .collect()
+}
+
+pub async fn acknowledge_iota_user_provisioning(user_id: UserId, iota_id: IotaId) -> Result<bool> {
+    let result =
+        sqlx::query("DELETE FROM pending_iota_user_provisioning WHERE user_id = ? AND iota_id = ?")
+            .bind(user_id.0)
+            .bind(iota_id.0)
+            .execute(&pool().await?)
+            .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 pub fn generate_protocol_id() -> UserId {
     loop {
         let value = rand::random::<u64>() & ((1_u64 << 48) - 1);

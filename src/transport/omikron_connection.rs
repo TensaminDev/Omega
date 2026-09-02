@@ -476,6 +476,10 @@ impl OmikronConnection {
             Some(CommunicationType::EraseHostedUserDataAck) => {
                 crate::transport::handlers::account::erase_hosted_user_data_ack(self, value).await
             }
+            Some(CommunicationType::AcknowledgeIotaUserProvision) => {
+                crate::transport::handlers::account::acknowledge_iota_user_provisioning(self, value)
+                    .await
+            }
             Some(CommunicationType::ReleaseUserFromIota) => {
                 crate::transport::handlers::account::release_from_iota(self, value).await
             }

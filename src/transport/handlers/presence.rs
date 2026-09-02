@@ -337,6 +337,7 @@ pub async fn iota_connected(
         .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
     connection.clone().send(&response).await?;
     crate::transport::omikron_manager::deliver_pending_erasures(iota_id).await;
+    crate::transport::omikron_manager::deliver_pending_user_provisioning(iota_id).await;
     publish_changed_states(&state, &before, &users).await;
     connection
         .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))

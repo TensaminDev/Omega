@@ -213,3 +213,33 @@ pub async fn deliver_pending_erasures(iota_id: i64) {
         let _ = connection.clone().send(&request).await;
     }
 }
+
+/* Provisioning retries until the destination Iota has persisted public
+ * account metadata and acknowledges it. Credentials never enter this path. */
+pub async fn deliver_pending_user_provisioning(iota_id: i64) {
+    let Ok(users) =
+        user_repo::pending_iota_user_provisioning(crate::models::IotaId::from(iota_id)).await
+    else {
+        return;
+    };
+    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else {
+        return;
+    };
+    let Some(connection) = get_connected_omikron(omikron_id) else {
+        return;
+    };
+    for user in users {
+        let Ok(public_key) = user.public_key.try_to_base64() else {
+            continue;
+        };
+        let request = CommunicationValue::new(CommunicationType::ProvisionIotaUser)
+            .add_typed_default(
+                DataType::UserId,
+                DataValue::SignedNumber(user.user_id.0.into()),
+            )
+            .add_typed_default(DataType::Username, DataValue::Str(user.username))
+            .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
+            .add_typed_default(DataType::InvitationId, DataValue::Str(user.invitation_id));
+        let _ = connection.clone().send(&request).await;
+    }
+}

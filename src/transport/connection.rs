@@ -79,6 +79,7 @@ pub(crate) fn validate_dispatch_fields(value: &CommunicationValue) -> OmikronRes
             | mtp::codec::CommunicationType::DeleteUserCredentialBegin
             | mtp::codec::CommunicationType::DeleteUserCredentialComplete
             | mtp::codec::CommunicationType::EraseHostedUserDataAck
+            | mtp::codec::CommunicationType::AcknowledgeIotaUserProvision
             | mtp::codec::CommunicationType::ReleaseUserFromIota
             | mtp::codec::CommunicationType::DeleteIota
             | mtp::codec::CommunicationType::GetNotifications

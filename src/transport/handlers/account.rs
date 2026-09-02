@@ -436,3 +436,44 @@ pub async fn erase_hosted_user_data_ack(
         }
     }
 }
+
+pub async fn acknowledge_iota_user_provisioning(
+    connection: Arc<OmikronConnection>,
+    value: CommunicationValue,
+) -> OmikronResult<()> {
+    value.require_id()?;
+    let Some(user_id) = value
+        .get_data(DataType::UserId)
+        .as_signed_number()
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
+    else {
+        return connection
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidUserId)
+            .await;
+    };
+    let iota_id = IotaId::from(value.require_sender_i64()?);
+    match user_repo::acknowledge_iota_user_provisioning(UserId::from(user_id), iota_id).await {
+        Ok(true) => {
+            connection
+                .send(
+                    &CommunicationValue::new(CommunicationType::Success)
+                        .with_id(value.require_id()?),
+                )
+                .await
+        }
+        Ok(false) => {
+            connection
+                .send_error_response(
+                    value.require_id()?,
+                    CommunicationType::ErrorNotAuthenticated,
+                )
+                .await
+        }
+        Err(_) => {
+            connection
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
+                .await
+        }
+    }
+}
