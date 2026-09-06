@@ -695,6 +695,13 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             persistent_stream_max_retries: 5,
             persistent_stream_retry_backoff: Duration::from_secs(5),
             max_frames_per_stream: None,
+            parallel_multi_stream_sends: true,
+            pipe_decision_timeout: Duration::from_secs(20),
+            pipe_stream_open_timeout: Duration::from_millis(500),
+            request_tombstone_ttl: Duration::from_secs(30),
+            request_tombstone_capacity: 200,
+            pipe_tombstone_ttl: Duration::from_secs(30),
+            pipe_tombstone_capacity: 200,
         })
         .with_authentication(
             state.identity.clone_keyring()?,
