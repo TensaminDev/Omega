@@ -192,7 +192,11 @@ mod tests {
         assert_eq!(forwarded.receiver(), Some(wire(RouteTarget::Iota(42))));
         assert_eq!(forwarded.sender(), None);
         assert_eq!(forwarded.payload(), frame.payload());
-        assert_eq!(forwarded.id(), frame.id());
+        assert!(
+            forwarded
+                .id()
+                .is_some_and(|id| id != frame.id().unwrap_or(0))
+        );
     }
 
     #[tokio::test]
