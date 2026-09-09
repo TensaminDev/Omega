@@ -26,6 +26,7 @@ use std::env;
 use std::path::Path;
 use std::time::Duration;
 use tokio::time::interval;
+use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
@@ -90,14 +91,21 @@ async fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(443);
 
+    let shutdown = CancellationToken::new();
+    let server = omikron_connection::start(port, state, shutdown.clone());
+    tokio::pin!(server);
     tokio::select! {
-        result = omikron_connection::start(port, state) => {
+        result = &mut server => {
             if let Err(e) = result {
                 log_err!(0, PrintType::General, "Server error: {:?}", e);
             }
         }
         _ = tokio::signal::ctrl_c() => {
             log!("Shutting down on signal...");
+            shutdown.cancel();
+            if let Err(e) = server.await {
+                log_err!(0, PrintType::General, "Server shutdown error: {:?}", e);
+            }
         }
     }
     rate_limit_cleanup.abort();

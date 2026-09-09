@@ -61,7 +61,7 @@ pub async fn read(
             .await;
     };
     if let Err(error) =
-        notification_repo::read_notification(UserId::from(receiver), UserId::from(other)).await
+        notification_repo::read_notification(UserId::from(other), UserId::from(receiver)).await
     {
         log!(
             crate::util::logger::PrintType::General,
@@ -133,7 +133,7 @@ pub async fn push(
         return Ok(());
     }
     if let Err(error) =
-        notification_repo::add_notification(UserId::from(receiver), UserId::from(sender)).await
+        notification_repo::add_notification(UserId::from(sender), UserId::from(receiver)).await
     {
         log!(
             crate::util::logger::PrintType::General,

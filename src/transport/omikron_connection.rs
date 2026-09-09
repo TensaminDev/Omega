@@ -669,7 +669,11 @@ pub async fn complete_register(_: PublicKeyBundle, _: Option<String>) -> u64 {
     0
 }
 
-pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start(
+    port: u16,
+    state: Arc<OmegaState>,
+    shutdown: CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cert_pem = load_file_vec("certs", "cert.pem")?;
     let key_pem = load_file_vec("certs", "key.pem")?;
     let web_config = server::web::build_web_config(state.identity.clone())?
@@ -712,7 +716,11 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
     let mut server = MTPWebServer::new(host_config, web_config).await?;
     log!("OmegaServer listening on {}:{}", ip.to_string(), port);
     loop {
-        let mut conn = match server.accept().await {
+        let accepted = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            accepted = server.accept() => accepted,
+        };
+        let mut conn = match accepted {
             Ok(Some(conn)) => conn,
             Ok(None) => break,
             Err(error) => {
@@ -767,6 +775,7 @@ pub async fn start(port: u16, state: Arc<OmegaState>) -> Result<(), Box<dyn std:
             connection.handle(&mut conn.receiver).await;
         });
     }
+    server.shutdown().await;
     Ok(())
 }
 
