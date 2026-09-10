@@ -4,6 +4,7 @@ use sqlx::{MySql, Pool, mysql::MySqlPoolOptions};
 use std::{env, sync::Arc};
 use tokio::sync::RwLock;
 
+pub mod invitation_repo;
 pub mod iota_repo;
 pub mod notification_repo;
 pub mod omikron_repo;

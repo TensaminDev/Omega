@@ -458,6 +458,21 @@ impl OmikronConnection {
             Some(CommunicationType::CompleteRegisterUser) => {
                 crate::transport::handlers::register::complete_user(self, value).await
             }
+            Some(CommunicationType::CreateUserInvitation) => {
+                crate::transport::handlers::invitations::manage(self, value).await
+            }
+            Some(CommunicationType::ListUserInvitations) => {
+                crate::transport::handlers::invitations::manage(self, value).await
+            }
+            Some(CommunicationType::RevokeUserInvitation) => {
+                crate::transport::handlers::invitations::manage(self, value).await
+            }
+            Some(CommunicationType::RedeemUserInvitation) => {
+                crate::transport::handlers::invitations::redeem(self, value).await
+            }
+            Some(CommunicationType::GetUserInvitationStatus) => {
+                crate::transport::handlers::invitations::redeem(self, value).await
+            }
             Some(CommunicationType::DeleteUser) => {
                 crate::transport::handlers::account::user(self, value).await
             }

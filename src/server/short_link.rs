@@ -7,8 +7,10 @@ pub async fn add_short_link(long: &str) -> Result<String, ()> {
     loop {
         let raw = generate_short_link().await;
         if short_link_repo::insert(&raw, long).await.map_err(|_| ())? {
+            let public_urls = crate::config::public_urls().map_err(|_| ())?;
             return Ok(format!(
-                "https://omega.tensamin.net/direct/{}",
+                "{}/direct/{}",
+                public_urls.omega_base_url,
                 format_with_dashes(&raw)
             ));
         }
@@ -36,6 +38,12 @@ pub async fn get_short_link(short: &str) -> Result<String, ()> {
     let frag = short.replace(key, "");
     let normalized = normalize_short(key);
 
+    if let Some(target) = crate::db::invitation_repo::direct_target(&normalized)
+        .await
+        .map_err(|_| ())?
+    {
+        return Ok(target);
+    }
     let target = short_link_repo::get(&normalized)
         .await
         .map_err(|_| ())?

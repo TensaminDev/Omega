@@ -22,6 +22,12 @@ pub struct OmegaConfig {
     pub dispatch: DispatchConfig,
 }
 
+#[derive(Clone, Debug)]
+pub struct PublicUrlConfig {
+    pub omega_base_url: String,
+    pub client_base_url: String,
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("invalid configuration value for {name}: {value}")]
@@ -84,6 +90,7 @@ impl Default for DispatchConfig {
 impl OmegaConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let rate_limits = RateLimitConfig::from_env()?;
+        PublicUrlConfig::from_env()?;
         let defaults = DispatchConfig::default();
         Ok(Self {
             rate_limits,
@@ -99,6 +106,32 @@ impl OmegaConfig {
             },
         })
     }
+}
+
+impl Default for PublicUrlConfig {
+    fn default() -> Self {
+        Self {
+            omega_base_url: "https://omega.tensamin.net".into(),
+            client_base_url: "https://tensamin.net".into(),
+        }
+    }
+}
+
+impl PublicUrlConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let defaults = Self::default();
+        Ok(Self {
+            omega_base_url: env_public_base_url("PUBLIC_OMEGA_BASE_URL", &defaults.omega_base_url)?,
+            client_base_url: env_public_base_url(
+                "PUBLIC_CLIENT_BASE_URL",
+                &defaults.client_base_url,
+            )?,
+        })
+    }
+}
+
+pub fn public_urls() -> Result<PublicUrlConfig, ConfigError> {
+    PublicUrlConfig::from_env()
 }
 
 fn env_usize(name: &str, fallback: usize) -> Result<usize, ConfigError> {
@@ -118,4 +151,43 @@ fn env_usize(name: &str, fallback: usize) -> Result<usize, ConfigError> {
 
 fn env_duration(name: &str, fallback: Duration) -> Result<Duration, ConfigError> {
     env_usize(name, fallback.as_secs() as usize).map(|value| Duration::from_secs(value as u64))
+}
+
+fn env_public_base_url(name: &str, fallback: &str) -> Result<String, ConfigError> {
+    let value = match env::var(name) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => fallback.to_owned(),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err(ConfigError::InvalidUnicode { name: name.into() });
+        }
+    };
+    let normalized = value.trim_end_matches('/');
+    let valid = normalized.parse::<http::Uri>().ok().is_some_and(|uri| {
+        matches!(uri.scheme_str(), Some("http" | "https"))
+            && uri.authority().is_some()
+            && matches!(uri.path(), "" | "/")
+            && uri.query().is_none()
+    });
+    if !valid {
+        return Err(ConfigError::InvalidValue {
+            name: name.into(),
+            value,
+        });
+    }
+    Ok(normalized.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::env_public_base_url;
+
+    #[test]
+    fn validates_public_base_urls() {
+        assert_eq!(
+            env_public_base_url("UNSET_TEST_URL", "https://example.com/").unwrap(),
+            "https://example.com"
+        );
+        assert!(env_public_base_url("UNSET_TEST_URL", "example.com").is_err());
+        assert!(env_public_base_url("UNSET_TEST_URL", "https://example.com/path").is_err());
+    }
 }

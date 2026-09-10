@@ -5,7 +5,7 @@ use crate::{
     sql::connection_status::UserStatus,
 };
 use mtp::crypto::PublicKeyBundle;
-use sqlx::{FromRow, MySql, QueryBuilder, Row};
+use sqlx::{FromRow, MySql, QueryBuilder, Row, Transaction};
 use std::collections::HashMap;
 
 pub const MAX_PROTOCOL_ID: i64 = (1_i64 << 48) - 1;
@@ -14,72 +14,21 @@ const ID_ALLOCATION_ATTEMPTS: usize = 16;
 #[derive(Clone, Debug)]
 pub struct PendingIotaUserProvisioning {
     pub user_id: UserId,
-    pub iota_id: IotaId,
-    pub invitation_id: String,
+    pub invitation_id: i64,
     pub username: String,
     pub public_key: PublicKeyBundle,
-}
-
-pub async fn create_invitation(
-    invitation_id: &str,
-    token_hash: &[u8],
-    iota_id: IotaId,
-) -> Result<()> {
-    if uuid::Uuid::parse_str(invitation_id).is_err()
-        || token_hash.len() != 32
-        || !valid_protocol_id(iota_id.0)
-    {
-        return Err(OmegaError::Validation("invalid invitation".into()));
-    }
-    sqlx::query(
-        "INSERT INTO user_invitations (invitation_id, token_hash, iota_id) VALUES (?, ?, ?)",
-    )
-    .bind(invitation_id)
-    .bind(token_hash)
-    .bind(iota_id.0)
-    .execute(&pool().await?)
-    .await?;
-    Ok(())
-}
-
-pub async fn revoke_invitation(invitation_id: &str, iota_id: IotaId) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE user_invitations SET state = 'revoked', revoked_at = UTC_TIMESTAMP() WHERE invitation_id = ? AND iota_id = ? AND state = 'pending'",
-    )
-    .bind(invitation_id)
-    .bind(iota_id.0)
-    .execute(&pool().await?)
-    .await?;
-    Ok(result.rows_affected() == 1)
-}
-
-pub async fn enqueue_iota_user_provisioning(
-    provisioning: &PendingIotaUserProvisioning,
-) -> Result<()> {
-    if !valid_protocol_id(provisioning.user_id.0)
-        || !valid_protocol_id(provisioning.iota_id.0)
-        || !valid_username(&provisioning.username)
-    {
-        return Err(OmegaError::Validation("invalid user provisioning".into()));
-    }
-    sqlx::query(
-        "INSERT INTO pending_iota_user_provisioning (user_id, iota_id, invitation_id, username, public_key) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(provisioning.user_id.0)
-    .bind(provisioning.iota_id.0)
-    .bind(&provisioning.invitation_id)
-    .bind(&provisioning.username)
-    .bind(provisioning.public_key.try_as_bytes()?)
-    .execute(&pool().await?)
-    .await?;
-    Ok(())
+    pub invitation_revision: i64,
 }
 
 pub async fn pending_iota_user_provisioning(
     iota_id: IotaId,
 ) -> Result<Vec<PendingIotaUserProvisioning>> {
     let rows = sqlx::query(
-        "SELECT user_id, iota_id, invitation_id, username, public_key FROM pending_iota_user_provisioning WHERE iota_id = ? ORDER BY created_at",
+        "SELECT p.user_id, p.iota_id, p.invitation_id, p.username, p.public_key, \
+                i.revision AS invitation_revision \
+         FROM pending_iota_user_provisioning p \
+         JOIN user_invitations i ON i.invitation_id = p.invitation_id \
+         WHERE p.iota_id = ? ORDER BY p.created_at",
     )
     .bind(iota_id.0)
     .fetch_all(&pool().await?)
@@ -90,24 +39,22 @@ pub async fn pending_iota_user_provisioning(
                 .map_err(|error| OmegaError::Validation(error.to_string()))?;
             Ok(PendingIotaUserProvisioning {
                 user_id: UserId::from(row.get::<i64, _>("user_id")),
-                iota_id: IotaId::from(row.get::<i64, _>("iota_id")),
                 invitation_id: row.get("invitation_id"),
                 username: String::from_utf8(row.get::<Vec<u8>, _>("username"))
                     .map_err(|error| OmegaError::Validation(error.to_string()))?,
                 public_key,
+                invitation_revision: row.get("invitation_revision"),
             })
         })
         .collect()
 }
 
-pub async fn acknowledge_iota_user_provisioning(user_id: UserId, iota_id: IotaId) -> Result<bool> {
-    let result =
-        sqlx::query("DELETE FROM pending_iota_user_provisioning WHERE user_id = ? AND iota_id = ?")
-            .bind(user_id.0)
-            .bind(iota_id.0)
-            .execute(&pool().await?)
+pub async fn pending_provisioning_iota_ids() -> Result<Vec<IotaId>> {
+    let rows =
+        sqlx::query_scalar::<_, i64>("SELECT DISTINCT iota_id FROM pending_iota_user_provisioning")
+            .fetch_all(&pool().await?)
             .await?;
-    Ok(result.rows_affected() == 1)
+    Ok(rows.into_iter().map(IotaId::from).collect())
 }
 
 pub fn generate_protocol_id() -> UserId {
@@ -509,24 +456,40 @@ pub async fn delete_user_with_pending_erasure(id: UserId) -> Result<Option<IotaI
         .ok_or(OmegaError::NotFound)?;
     let iota_id: Option<i64> = row.get("iota_id");
     if let Some(iota_id) = iota_id {
-        sqlx::query(
-            "INSERT IGNORE INTO pending_iota_user_erasure (user_id, iota_id) VALUES (?, ?)",
-        )
-        .bind(id.0)
-        .bind(iota_id)
-        .execute(&mut *tx)
-        .await?;
+        queue_user_erasure_in_tx(&mut tx, id, IotaId::from(iota_id)).await?;
+    } else {
+        sqlx::query("DELETE FROM registration_leases WHERE user_id = ?")
+            .bind(id.0)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id.0)
+            .execute(&mut *tx)
+            .await?;
     }
-    sqlx::query("DELETE FROM registration_leases WHERE user_id = ?")
-        .bind(id.0)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(id.0)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok(iota_id.map(IotaId::from))
+}
+
+pub(crate) async fn queue_user_erasure_in_tx(
+    tx: &mut Transaction<'_, MySql>,
+    user_id: UserId,
+    iota_id: IotaId,
+) -> Result<()> {
+    sqlx::query("INSERT IGNORE INTO pending_iota_user_erasure (user_id, iota_id) VALUES (?, ?)")
+        .bind(user_id.0)
+        .bind(iota_id.0)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM registration_leases WHERE user_id = ?")
+        .bind(user_id.0)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(user_id.0)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
 }
 
 pub async fn pending_erasures_for_iota(iota_id: IotaId) -> Result<Vec<UserId>> {
@@ -643,7 +606,7 @@ pub async fn register_complete_user(
     Ok(())
 }
 
-fn valid_username(username: &str) -> bool {
+pub(crate) fn valid_username(username: &str) -> bool {
     !username.is_empty()
         && username.len() <= 15
         && username

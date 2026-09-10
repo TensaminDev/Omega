@@ -37,6 +37,10 @@ pub fn build_web_config(
             "/api/get/omikron/{id}",
             api_pattern_handler(identity.clone()),
         )?
+        .route_pattern(
+            "/api/get/registration-omikron/{id}",
+            api_pattern_handler(identity.clone()),
+        )?
         .route_pattern("/api/get/iota/{id}", api_pattern_handler(identity.clone()))?
         .route_pattern(
             "/api/get/id/{username}",

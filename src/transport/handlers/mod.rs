@@ -1,5 +1,6 @@
 pub mod account;
 pub mod calls;
+pub mod invitations;
 pub mod links;
 pub mod messaging;
 pub mod notifications;

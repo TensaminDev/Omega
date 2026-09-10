@@ -43,6 +43,8 @@ pub enum OmegaError {
     InvalidResponse,
     #[error("authentication failed")]
     AuthenticationFailed,
+    #[error("invitation error: {0}")]
+    Invitation(&'static str),
     #[error("send error: {0}")]
     SendError(String),
     #[error("I/O error: {0}")]
@@ -64,7 +66,7 @@ impl From<sqlx::Error> for OmegaError {
 impl OmegaError {
     pub fn status_code(&self) -> http::StatusCode {
         match self {
-            Self::Validation(_) => http::StatusCode::BAD_REQUEST,
+            Self::Validation(_) | Self::Invitation(_) => http::StatusCode::BAD_REQUEST,
             Self::NotFound => http::StatusCode::NOT_FOUND,
             Self::DatabaseNotInitialized
             | Self::Database(_)

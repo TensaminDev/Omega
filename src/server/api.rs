@@ -9,7 +9,7 @@ use crate::db::{
 };
 use crate::error::{OmegaError, Result};
 use crate::identity::OmegaIdentity;
-use crate::models::UserId;
+use crate::models::{IotaId, UserId};
 use crate::server::{
     middleware,
     validation::{parse_positive_id, validate_non_empty},
@@ -100,6 +100,32 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
 
             // Database rows describe registered Omikrons. The public discovery
             // API must expose only routes backed by a currently live transport.
+            get_connected_omikron(omikron_id).ok_or(OmegaError::NotFound)?;
+            let omikron = get_omikron_by_id(omikron_id.into()).await?;
+            Ok((
+                StatusCode::OK,
+                json(&OmikronResponse {
+                    status: "success",
+                    id: omikron.id.0,
+                    public_key: omikron.public_key.try_to_base64()?,
+                    ip_address: omikron.ip_address,
+                    port: omikron.port,
+                }),
+            ))
+        }
+        ["api", "get", "registration-omikron", id] => {
+            let iota_id = parse_positive_id(id)?;
+            get_iota_by_id(IotaId::from(iota_id)).await?;
+            let omikron_id = if let Some(primary) = get_iota_primary_omikron_connection(iota_id) {
+                primary
+            } else {
+                get_random_omikron()
+                    .await
+                    .map_err(|_| OmegaError::NotFound)?
+                    .get_omikron_id()
+                    .await
+                    .ok_or(OmegaError::NotFound)?
+            };
             get_connected_omikron(omikron_id).ok_or(OmegaError::NotFound)?;
             let omikron = get_omikron_by_id(omikron_id.into()).await?;
             Ok((
@@ -226,14 +252,24 @@ pub async fn handle(
     }
     if let ["direct", short @ ..] = path_parts.as_slice() {
         let short = short.join("");
-        let location = crate::server::short_link::get_short_link(&short)
-            .await
-            .unwrap_or_else(|_| "https://tensamin.net".to_string());
-        return with_cors(
-            response
-                .status(StatusCode::TEMPORARY_REDIRECT)
-                .header("location", &location),
-        );
+        return match crate::server::short_link::get_short_link(&short).await {
+            Ok(location) => with_cors(
+                response
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", &location)
+                    .header("cache-control", "no-store")
+                    .header("referrer-policy", "no-referrer"),
+            ),
+            Err(_) => with_cors(
+                response
+                    .status(StatusCode::NOT_FOUND)
+                    .header("cache-control", "no-store")
+                    .header("referrer-policy", "no-referrer")
+                    .body(json(&StatusResponse {
+                        status: "error_not_found",
+                    })),
+            ),
+        };
     }
     let (status, body) = route(&path_parts, &identity)
         .await

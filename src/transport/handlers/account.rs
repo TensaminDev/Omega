@@ -453,7 +453,19 @@ pub async fn acknowledge_iota_user_provisioning(
             .await;
     };
     let iota_id = IotaId::from(value.require_sender_i64()?);
-    match user_repo::acknowledge_iota_user_provisioning(UserId::from(user_id), iota_id).await {
+    let Some(invitation_id) = value
+        .get_data(DataType::InvitationId)
+        .as_signed_number()
+        .and_then(|id| i64::try_from(id).ok())
+        .filter(|id| *id > 0)
+    else {
+        return connection
+            .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
+            .await;
+    };
+    match crate::db::invitation_repo::acknowledge(invitation_id, UserId::from(user_id), iota_id)
+        .await
+    {
         Ok(true) => {
             connection
                 .send(

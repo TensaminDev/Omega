@@ -233,13 +233,51 @@ pub async fn deliver_pending_user_provisioning(iota_id: i64) {
             continue;
         };
         let request = CommunicationValue::new(CommunicationType::ProvisionIotaUser)
+            .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
             .add_typed_default(
                 DataType::UserId,
                 DataValue::SignedNumber(user.user_id.0.into()),
             )
             .add_typed_default(DataType::Username, DataValue::Str(user.username))
             .add_typed_default(DataType::PublicKey, DataValue::Str(public_key))
-            .add_typed_default(DataType::InvitationId, DataValue::Str(user.invitation_id));
-        let _ = connection.clone().send(&request).await;
+            .add_typed_default(
+                DataType::InvitationId,
+                DataValue::SignedNumber(user.invitation_id.into()),
+            )
+            .add_typed_default(
+                DataType::InvitationRevision,
+                DataValue::SignedNumber(user.invitation_revision.into()),
+            );
+        if let Err(error) = connection.clone().send(&request).await {
+            crate::log_in!(
+                crate::util::logger::PrintType::General,
+                "Iota user provisioning delivery failed for Iota {}: {}",
+                iota_id,
+                error
+            );
+        }
     }
+}
+
+pub fn spawn_user_provisioning_outbox_worker() -> JoinHandle<()> {
+    tokio::spawn(async {
+        let mut retry = interval(Duration::from_secs(30));
+        loop {
+            retry.tick().await;
+            match user_repo::pending_provisioning_iota_ids().await {
+                Ok(iota_ids) => {
+                    for iota_id in iota_ids {
+                        if get_iota_primary_omikron_connection(iota_id.0).is_some() {
+                            deliver_pending_user_provisioning(iota_id.0).await;
+                        }
+                    }
+                }
+                Err(error) => crate::log_in!(
+                    crate::util::logger::PrintType::General,
+                    "Could not load Iota provisioning outbox: {}",
+                    error
+                ),
+            }
+        }
+    })
 }
