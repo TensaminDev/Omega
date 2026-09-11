@@ -87,6 +87,7 @@ async fn main() {
     });
     let snapshot_outbox_worker = omikron_manager::spawn_iota_snapshot_outbox_worker();
     let provisioning_outbox_worker = omikron_manager::spawn_user_provisioning_outbox_worker();
+    let erasure_outbox_worker = omikron_manager::spawn_user_erasure_outbox_worker();
     let port: u16 = env::var("PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -113,4 +114,5 @@ async fn main() {
     short_link_cleanup.abort();
     snapshot_outbox_worker.abort();
     provisioning_outbox_worker.abort();
+    erasure_outbox_worker.abort();
 }

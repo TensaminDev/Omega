@@ -503,6 +503,16 @@ pub async fn pending_erasures_for_iota(iota_id: IotaId) -> Result<Vec<UserId>> {
         .collect())
 }
 
+pub async fn pending_erasure_iota_ids() -> Result<Vec<IotaId>> {
+    let rows = sqlx::query("SELECT DISTINCT iota_id FROM pending_iota_user_erasure")
+        .fetch_all(&pool().await?)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| IotaId::from(row.get::<i64, _>("iota_id")))
+        .collect())
+}
+
 pub async fn acknowledge_pending_erasure(user_id: UserId, iota_id: IotaId) -> Result<bool> {
     let result =
         sqlx::query("DELETE FROM pending_iota_user_erasure WHERE user_id = ? AND iota_id = ?")

@@ -91,6 +91,10 @@ fn revocation_applies(state: InvitationState) -> bool {
     )
 }
 
+fn invitation_password_valid(expected: Option<&[u8]>, actual: Option<&[u8]>) -> bool {
+    expected.is_none_or(|expected| actual.is_some_and(|actual| expected == actual))
+}
+
 pub async fn create(
     iota_id: IotaId,
     lifetime_seconds: i64,
@@ -132,11 +136,12 @@ pub async fn create(
 
             let invitation = sqlx::query(
                 "INSERT INTO user_invitations \
-                 (invitation_id, token_hash, password_hash, iota_id, label, expires_at) \
-                 VALUES (?, ?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND))",
+                 (invitation_id, token_hash, short_token_hash, password_hash, iota_id, label, expires_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND))",
             )
             .bind(invitation_id)
             .bind(token_hash.as_slice())
+            .bind(short_code_hash.as_slice())
             .bind(password_hash.as_ref().map(|hash| hash.as_slice()))
             .bind(iota_id.0)
             .bind(label.map(str::as_bytes))
@@ -315,11 +320,10 @@ pub async fn redeem(
     let database = pool().await?;
     let mut transaction = database.begin().await?;
     let row = sqlx::query(
-        "SELECT state, revision, expires_at > UTC_TIMESTAMP() AS current, token_hash, password_hash, redeemed_user_id, \
-         (SELECT key_hash FROM invitation_short_links WHERE invitation_id = ?) AS short_hash \
+        "SELECT state, revision, expires_at > UTC_TIMESTAMP() AS current, token_hash, \
+         short_token_hash, password_hash, redeemed_user_id \
          FROM user_invitations WHERE invitation_id = ? AND iota_id = ? FOR UPDATE",
     )
-    .bind(invitation_id)
     .bind(invitation_id)
     .bind(iota_id.0)
     .fetch_optional(&mut *transaction)
@@ -327,12 +331,15 @@ pub async fn redeem(
     .ok_or(OmegaError::NotFound)?;
     let state = InvitationState::parse(row.get::<String, _>("state").as_str())?;
     let token_hash: Vec<u8> = row.get("token_hash");
-    let short_hash: Option<Vec<u8>> = row.get("short_hash");
+    let short_hash: Option<Vec<u8>> = row.get("short_token_hash");
     if token_hash != credential_hash && short_hash.as_deref() != Some(credential_hash.as_slice()) {
         return Err(OmegaError::Invitation("invitation_invalid"));
     }
     let expected_password: Option<Vec<u8>> = row.get("password_hash");
-    if expected_password.as_deref() != password_hash.as_ref().map(|hash| hash.as_slice()) {
+    if !invitation_password_valid(
+        expected_password.as_deref(),
+        password_hash.as_ref().map(|hash| hash.as_slice()),
+    ) {
         return Err(OmegaError::Invitation("invitation_password_invalid"));
     }
     if matches!(
@@ -518,7 +525,9 @@ pub async fn direct_target(short_code: &str) -> Result<Option<String>> {
         "SELECT i.invitation_id, i.iota_id FROM direct_link_keys d \
          JOIN invitation_short_links l ON l.key_hash = d.key_hash \
          JOIN user_invitations i ON i.invitation_id = l.invitation_id \
-         WHERE d.key_hash = ? AND d.target_kind = 'invitation'",
+         WHERE d.key_hash = ? AND d.target_kind = 'invitation' \
+         AND i.state IN ('pending', 'provisioning') \
+         AND i.expires_at > UTC_TIMESTAMP()",
     )
     .bind(key_hash.as_slice())
     .fetch_optional(&pool().await?)
@@ -600,7 +609,7 @@ fn normalize_short_code(value: &str) -> String {
 mod tests {
     use super::{
         InvitationState, SHORT_CODE_CHARS, SHORT_CODE_LEN, generate_short_code,
-        normalize_short_code, parse_token, revocation_applies,
+        invitation_password_valid, normalize_short_code, parse_token, revocation_applies,
     };
 
     #[test]
@@ -635,5 +644,16 @@ mod tests {
             assert_eq!(code.len(), SHORT_CODE_LEN);
             assert!(code.bytes().all(|byte| SHORT_CODE_CHARS.contains(&byte)));
         }
+    }
+
+    #[test]
+    fn optional_invitation_password_only_constrains_protected_invitations() {
+        let expected = [1_u8; 32];
+        let wrong = [2_u8; 32];
+        assert!(invitation_password_valid(None, None));
+        assert!(invitation_password_valid(None, Some(&wrong)));
+        assert!(!invitation_password_valid(Some(&expected), None));
+        assert!(!invitation_password_valid(Some(&expected), Some(&wrong)));
+        assert!(invitation_password_valid(Some(&expected), Some(&expected)));
     }
 }

@@ -210,7 +210,14 @@ pub async fn deliver_pending_erasures(iota_id: i64) {
         let request = CommunicationValue::new(CommunicationType::EraseHostedUserData)
             .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.0.into()))
             .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
-        let _ = connection.clone().send(&request).await;
+        if let Err(error) = connection.clone().send(&request).await {
+            crate::log_in!(
+                crate::util::logger::PrintType::General,
+                "Iota user erasure delivery failed for Iota {}: {}",
+                iota_id,
+                error
+            );
+        }
     }
 }
 
@@ -275,6 +282,29 @@ pub fn spawn_user_provisioning_outbox_worker() -> JoinHandle<()> {
                 Err(error) => crate::log_in!(
                     crate::util::logger::PrintType::General,
                     "Could not load Iota provisioning outbox: {}",
+                    error
+                ),
+            }
+        }
+    })
+}
+
+pub fn spawn_user_erasure_outbox_worker() -> JoinHandle<()> {
+    tokio::spawn(async {
+        let mut retry = interval(Duration::from_secs(30));
+        loop {
+            retry.tick().await;
+            match user_repo::pending_erasure_iota_ids().await {
+                Ok(iota_ids) => {
+                    for iota_id in iota_ids {
+                        if get_iota_primary_omikron_connection(iota_id.0).is_some() {
+                            deliver_pending_erasures(iota_id.0).await;
+                        }
+                    }
+                }
+                Err(error) => crate::log_in!(
+                    crate::util::logger::PrintType::General,
+                    "Could not load Iota erasure outbox: {}",
                     error
                 ),
             }
