@@ -3,9 +3,11 @@ use crate::api::response::{
     UserResponse, UsernameResponse, json,
 };
 use crate::db::{
-    iota_repo::get_iota_by_id,
+    iota_repo::{get_iota_by_id, get_node_descriptor, publish_node_descriptor},
     omikron_repo::get_omikron_by_id,
-    user_repo::{get_by_user_id, get_by_username},
+    user_repo::{
+        DescriptorPublicationState, descriptor_publication_state, get_by_user_id, get_by_username,
+    },
 };
 use crate::error::{OmegaError, Result};
 use crate::identity::OmegaIdentity;
@@ -15,9 +17,9 @@ use crate::server::{
     validation::{parse_positive_id, validate_non_empty},
     with_cors,
 };
+use crate::state::OmegaState;
 use crate::transport::omikron_manager::{
-    get_all_connections, get_connected_omikron, get_iota_primary_omikron_connection,
-    get_random_omikron,
+    get_all_connections, get_iota_primary_omikron_connection, get_random_omikron,
 };
 use crate::util::file_util::get_directory;
 use base64::Engine as _;
@@ -26,6 +28,7 @@ use http::{Method, StatusCode};
 use mtp::webserver::{HttpRequest, HttpResponse, RouteParams};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 
 fn error_body(error: &OmegaError) -> String {
     json(&StatusResponse {
@@ -55,10 +58,130 @@ fn user_response(user: crate::models::User) -> Result<UserResponse> {
     })
 }
 
-async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusCode, String)> {
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+async fn federation_user_descriptor(
+    user: crate::models::User,
+    identity: &OmegaIdentity,
+) -> Result<iota_identity::PrincipalDescriptorWireV1> {
+    let iota_id = user.iota_id.ok_or(OmegaError::NotFound)?;
+    let home_node = get_node_descriptor(iota_id).await?;
+    let verified_node = home_node
+        .clone()
+        .parse()
+        .and_then(|descriptor| descriptor.verify(None, now_millis()))
+        .map_err(|error| OmegaError::Validation(error.to_string()))?;
+    let source = serde_json::to_vec(&(
+        &user.username,
+        &user.display,
+        user.public_key.try_to_base64()?,
+        verified_node.descriptor().node.as_str(),
+        verified_node.descriptor().valid_until,
+    ))
+    .map_err(|error| OmegaError::Validation(error.to_string()))?;
+    let publication = descriptor_publication_state(
+        user.id,
+        &source,
+        verified_node.descriptor().valid_until,
+        now_millis(),
+    )
+    .await?;
+    sign_federation_user_descriptor(user, home_node, publication, identity)
+}
+
+fn sign_federation_user_descriptor(
+    user: crate::models::User,
+    home_node: iota_identity::NodeDescriptorWireV1,
+    publication: DescriptorPublicationState,
+    identity: &OmegaIdentity,
+) -> Result<iota_identity::PrincipalDescriptorWireV1> {
+    let verified_node = home_node
+        .clone()
+        .parse()
+        .and_then(|descriptor| descriptor.verify(None, now_millis()))
+        .map_err(|error| OmegaError::Validation(error.to_string()))?;
+    let authority = iota_identity::AuthorityId::for_omega(&identity.public_key_bundle())
+        .map_err(|error| OmegaError::Validation(error.to_string()))?;
+    let user_id = u64::try_from(user.id.0)
+        .map_err(|_| OmegaError::Validation("user ID is outside federation range".into()))?;
+    iota_identity::SignedPrincipalDescriptor::sign(
+        iota_identity::PrincipalDescriptor {
+            principal: iota_identity::PrincipalId { authority, user_id },
+            authority_kind: iota_identity::AuthorityKind::Omega,
+            username: Some(user.username),
+            display_name: user.display,
+            public_keys: vec![user.public_key],
+            home: iota_identity::PrincipalHome::Iota(verified_node.descriptor().node.clone()),
+            revision: publication.revision,
+            valid_until: publication.valid_until,
+            issued_at: publication.issued_at,
+        },
+        identity.keyring(),
+    )
+    .and_then(|descriptor| descriptor.to_wire_v1())
+    .map(|descriptor| descriptor.with_home_node(home_node))
+    .map_err(|error| OmegaError::Validation(error.to_string()))
+}
+
+async fn route(
+    path_parts: &[&str],
+    method: &Method,
+    body: Option<&Bytes>,
+    identity: &OmegaIdentity,
+    state: &OmegaState,
+) -> Result<(StatusCode, String)> {
     match path_parts {
+        [".well-known", "tensamin"] if method == Method::GET => {
+            let public_key = identity.public_key_bundle();
+            let authority_id = iota_identity::AuthorityId::for_omega(&public_key)
+                .map_err(|error| OmegaError::Validation(error.to_string()))?;
+            Ok((
+                StatusCode::OK,
+                json(&iota_identity::AuthorityDiscoveryDocument {
+                    version: 1,
+                    service: iota_identity::AuthorityKind::Omega,
+                    authority_id,
+                    node_id: None,
+                    public_key: public_key.try_to_base64()?,
+                    protocols: vec!["identity-http-v1".into()],
+                    node_descriptor: None,
+                    direct_endpoints: Vec::new(),
+                    relay_hints: Vec::new(),
+                }),
+            ))
+        }
+        ["federation", "v1", "users", "id", id] if method == Method::GET => {
+            let user = get_by_user_id(UserId::from(parse_positive_id(id)?)).await?;
+            Ok((
+                StatusCode::OK,
+                json(&federation_user_descriptor(user, identity).await?),
+            ))
+        }
+        ["federation", "v1", "users", "name", username] if method == Method::GET => {
+            validate_non_empty(username, "username", 15)?;
+            let user = get_by_username(username).await?;
+            Ok((
+                StatusCode::OK,
+                json(&federation_user_descriptor(user, identity).await?),
+            ))
+        }
+        ["federation", "v1", "iotas", id, "node"] if method == Method::POST => {
+            let body = body.ok_or_else(|| {
+                OmegaError::Validation("node descriptor request body is missing".into())
+            })?;
+            let descriptor = serde_json::from_slice(body)
+                .map_err(|error| OmegaError::Validation(error.to_string()))?;
+            let descriptor =
+                publish_node_descriptor(IotaId::from(parse_positive_id(id)?), descriptor).await?;
+            Ok((StatusCode::OK, json(&descriptor)))
+        }
         ["api", "get", "omikron"] => {
-            let connection = get_random_omikron()
+            let connection = get_random_omikron(state)
                 .await
                 .map_err(|_| OmegaError::NotFound)?;
             let id = connection
@@ -79,16 +202,16 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
         }
         ["api", "get", "omikron", id] => {
             let id = parse_positive_id(id)?;
-            let omikron_id = if get_connected_omikron(id).is_some() {
+            let omikron_id = if state.connected_omikron(id).is_some() {
                 id
-            } else if let Some(omikron_id) = get_iota_primary_omikron_connection(id) {
+            } else if let Some(omikron_id) = get_iota_primary_omikron_connection(state, id) {
                 omikron_id
             } else {
                 let user = get_by_user_id(UserId::from(id)).await?;
                 match user.iota_id {
-                    Some(iota_id) => get_iota_primary_omikron_connection(iota_id.0),
+                    Some(iota_id) => get_iota_primary_omikron_connection(state, iota_id.0),
                     None => {
-                        get_random_omikron()
+                        get_random_omikron(state)
                             .await
                             .map_err(|_| OmegaError::NotFound)?
                             .get_omikron_id()
@@ -100,7 +223,9 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
 
             // Database rows describe registered Omikrons. The public discovery
             // API must expose only routes backed by a currently live transport.
-            get_connected_omikron(omikron_id).ok_or(OmegaError::NotFound)?;
+            state
+                .connected_omikron(omikron_id)
+                .ok_or(OmegaError::NotFound)?;
             let omikron = get_omikron_by_id(omikron_id.into()).await?;
             Ok((
                 StatusCode::OK,
@@ -116,17 +241,20 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
         ["api", "get", "registration-omikron", id] => {
             let iota_id = parse_positive_id(id)?;
             get_iota_by_id(IotaId::from(iota_id)).await?;
-            let omikron_id = if let Some(primary) = get_iota_primary_omikron_connection(iota_id) {
-                primary
-            } else {
-                get_random_omikron()
-                    .await
-                    .map_err(|_| OmegaError::NotFound)?
-                    .get_omikron_id()
-                    .await
-                    .ok_or(OmegaError::NotFound)?
-            };
-            get_connected_omikron(omikron_id).ok_or(OmegaError::NotFound)?;
+            let omikron_id =
+                if let Some(primary) = get_iota_primary_omikron_connection(state, iota_id) {
+                    primary
+                } else {
+                    get_random_omikron(state)
+                        .await
+                        .map_err(|_| OmegaError::NotFound)?
+                        .get_omikron_id()
+                        .await
+                        .ok_or(OmegaError::NotFound)?
+                };
+            state
+                .connected_omikron(omikron_id)
+                .ok_or(OmegaError::NotFound)?;
             let omikron = get_omikron_by_id(omikron_id.into()).await?;
             Ok((
                 StatusCode::OK,
@@ -140,7 +268,7 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
             ))
         }
         ["api", "get", "connections"] => {
-            let connections = get_all_connections()
+            let connections = get_all_connections(state)
                 .await
                 .map_err(|_| OmegaError::Transport("failed to load connections".to_string()))?;
             let connections = connections
@@ -206,8 +334,10 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
             Ok((StatusCode::OK, json(&user_response(user)?)))
         }
         _ => Ok((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json(&StatusResponse { status: "error" }),
+            StatusCode::NOT_FOUND,
+            json(&StatusResponse {
+                status: "error_not_found",
+            }),
         )),
     }
 }
@@ -215,7 +345,7 @@ async fn route(path_parts: &[&str], identity: &OmegaIdentity) -> Result<(StatusC
 pub async fn handle(
     request: HttpRequest,
     response: HttpResponse,
-    identity: Arc<OmegaIdentity>,
+    state: Arc<OmegaState>,
 ) -> HttpResponse {
     let method = request.method;
     let path = request.uri.path().to_string();
@@ -232,17 +362,39 @@ pub async fn handle(
     let path_parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     if let ["api", "download", "iota_frontend"] = path_parts.as_slice() {
         let file_path = format!("{}/downloads/iota_frontend.zip", get_directory());
-        return match std::fs::read(file_path) {
-            Ok(bytes) => with_cors(
-                response
+        return match tokio::fs::File::open(file_path).await {
+            Ok(mut file) => {
+                let content_length = file.metadata().await.ok().map(|metadata| metadata.len());
+                let (tx, rx) = tokio::sync::mpsc::channel(8);
+                tokio::spawn(async move {
+                    let mut buffer = vec![0_u8; 64 * 1024];
+                    loop {
+                        let read = match file.read(&mut buffer).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => read,
+                        };
+                        if tx
+                            .send(Bytes::copy_from_slice(&buffer[..read]))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+                let mut response = response
                     .status(StatusCode::OK)
                     .header("content-type", "application/zip")
                     .header(
                         "content-disposition",
                         "attachment; filename=\"iota_frontend.zip\"",
                     )
-                    .body(Bytes::from(bytes)),
-            ),
+                    .stream(rx);
+                if let Some(content_length) = content_length {
+                    response = response.header("content-length", &content_length.to_string());
+                }
+                with_cors(response)
+            }
             Err(_) => with_cors(response.status(StatusCode::NOT_FOUND).body(json(
                 &StatusResponse {
                     status: "error_not_found",
@@ -271,9 +423,15 @@ pub async fn handle(
             ),
         };
     }
-    let (status, body) = route(&path_parts, &identity)
-        .await
-        .unwrap_or_else(|error| (error.status_code(), error_body(&error)));
+    let (status, body) = route(
+        &path_parts,
+        &method,
+        request.body.as_ref(),
+        &state.identity,
+        &state,
+    )
+    .await
+    .unwrap_or_else(|error| (error.status_code(), error_body(&error)));
     with_cors(response.status(status).body(body))
 }
 
@@ -281,7 +439,76 @@ pub async fn handle_pattern(
     request: HttpRequest,
     response: HttpResponse,
     _params: RouteParams,
-    identity: Arc<OmegaIdentity>,
+    state: Arc<OmegaState>,
 ) -> HttpResponse {
-    handle(request, response, identity).await
+    handle(request, response, state).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iota_identity::{LocalNodeIdentity, NodeDescriptor, SignedNodeDescriptor};
+    use mtp::crypto::Keyring;
+
+    #[test]
+    fn omega_descriptor_binds_user_to_verified_hosting_iota() {
+        let omega = OmegaIdentity::from_keyring(Keyring::generate());
+        let iota = LocalNodeIdentity::from_keyring(Keyring::generate()).unwrap();
+        let user_keyring = Keyring::generate();
+        let now = now_millis();
+        let node = SignedNodeDescriptor::sign(
+            NodeDescriptor {
+                node: iota.node_id().clone(),
+                public_keys: iota.public_keys(),
+                direct_endpoints: vec![
+                    iota_identity::AuthorityLocator::new("iota.example:1984").unwrap(),
+                ],
+                relay_hints: Vec::new(),
+                revision: 4,
+                valid_until: Some(now + 60_000),
+            },
+            &iota,
+        )
+        .unwrap()
+        .to_wire_v1()
+        .unwrap();
+        let wire = sign_federation_user_descriptor(
+            crate::models::User {
+                id: UserId::from(7),
+                iota_id: Some(IotaId::from(11)),
+                username: "alice".into(),
+                display: Some("Alice".into()),
+                status: None,
+                presence_preference: "user_online".into(),
+                about: None,
+                avatar: None,
+                sub_level: 0,
+                sub_end: 0,
+                public_key: user_keyring.public_key_bundle(),
+                token: String::new(),
+                created_at: now,
+            },
+            node,
+            DescriptorPublicationState {
+                revision: 3,
+                issued_at: now,
+                valid_until: Some(now + 60_000),
+            },
+            &omega,
+        )
+        .unwrap();
+        let authority = iota_identity::AuthorityId::for_omega(&omega.public_key_bundle()).unwrap();
+        let verified = wire
+            .clone()
+            .parse()
+            .unwrap()
+            .verify(&authority, &omega.public_key_bundle(), None, now)
+            .unwrap();
+        assert_eq!(verified.descriptor().principal.user_id, 7);
+        assert_eq!(
+            verified.descriptor().home,
+            iota_identity::PrincipalHome::Iota(iota.node_id().clone())
+        );
+        assert_eq!(wire.home_node.unwrap().revision, 4);
+    }
 }

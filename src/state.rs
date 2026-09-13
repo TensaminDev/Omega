@@ -1,10 +1,15 @@
 use crate::{
     config::OmegaConfig, identity::OmegaIdentity, sql::user_online_tracker::PresenceTracker,
+    transport::connection::OmikronConnection,
 };
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
+use tokio::time::interval;
+
+pub const ACCOUNT_CHALLENGE_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AccountChallengeOperation {
@@ -24,6 +29,7 @@ pub struct OmegaState {
     pub(crate) config: Arc<OmegaConfig>,
     pub(crate) global_handler_limit: Arc<Semaphore>,
     pub(crate) omikron_handler_concurrency: usize,
+    omikrons: DashMap<i64, Weak<OmikronConnection>>,
     challenges: DashMap<(AccountChallengeOperation, i64, i64), AccountChallenge>,
 }
 
@@ -37,6 +43,7 @@ impl OmegaState {
             config: Arc::new(config),
             global_handler_limit: Arc::new(Semaphore::new(global_handler_concurrency)),
             omikron_handler_concurrency,
+            omikrons: DashMap::new(),
             challenges: DashMap::new(),
         }
     }
@@ -46,7 +53,7 @@ impl OmegaState {
     }
 
     #[cfg(test)]
-    fn test_state() -> Arc<Self> {
+    pub(crate) fn test_state() -> Arc<Self> {
         use mtp::crypto::Keyring;
 
         let mut config = OmegaConfig::default();
@@ -85,15 +92,72 @@ impl OmegaState {
         self.challenges
             .remove(&(operation, user_id, requester_iota_id))
             .is_some_and(|(_, value)| {
-                value.nonce == nonce && value.created_at.elapsed() <= Duration::from_secs(120)
+                value.nonce == nonce && value.created_at.elapsed() <= ACCOUNT_CHALLENGE_TTL
             })
     }
+
+    pub fn purge_expired_challenges(&self) {
+        self.challenges
+            .retain(|_, challenge| challenge.created_at.elapsed() <= ACCOUNT_CHALLENGE_TTL);
+    }
+
+    pub fn register_omikron(
+        &self,
+        id: i64,
+        connection: &Arc<OmikronConnection>,
+    ) -> Option<Arc<OmikronConnection>> {
+        self.omikrons
+            .insert(id, Arc::downgrade(connection))
+            .and_then(|old| old.upgrade())
+    }
+
+    pub fn remove_omikron(&self, id: i64, connection: &Arc<OmikronConnection>) -> bool {
+        let connection = Arc::downgrade(connection);
+        self.omikrons
+            .remove_if(&id, |_, current| Weak::ptr_eq(current, &connection))
+            .is_some()
+    }
+
+    pub fn connected_omikron(&self, id: i64) -> Option<Arc<OmikronConnection>> {
+        let connection = self.omikrons.get(&id)?.clone();
+        match connection.upgrade() {
+            Some(connection) => Some(connection),
+            None => {
+                self.omikrons
+                    .remove_if(&id, |_, current| Weak::ptr_eq(current, &connection));
+                None
+            }
+        }
+    }
+
+    pub fn connected_omikron_ids(&self) -> Vec<i64> {
+        let ids = self
+            .omikrons
+            .iter()
+            .map(|entry| *entry.key())
+            .collect::<Vec<_>>();
+        ids.into_iter()
+            .filter(|id| self.connected_omikron(*id).is_some())
+            .collect()
+    }
+}
+
+pub fn spawn_challenge_cleanup(state: Arc<OmegaState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(ACCOUNT_CHALLENGE_TTL);
+
+        loop {
+            ticker.tick().await;
+            state.purge_expired_challenges();
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::OmegaState;
+    use super::{ACCOUNT_CHALLENGE_TTL, AccountChallenge, AccountChallengeOperation, OmegaState};
     use crate::sql::connection_status::UserStatus;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn state_instances_have_independent_presence_trackers() {
@@ -106,6 +170,33 @@ mod tests {
         assert!(!second.presence.has_iota_route(11));
         assert_eq!(first.presence.primary_iota_route(11), Some(42));
         assert_eq!(second.presence.primary_iota_route(11), None);
+    }
+
+    #[test]
+    fn purge_removes_expired_challenges_without_consuming_them() {
+        let state = OmegaState::test_state();
+        let expired_key = (AccountChallengeOperation::Attach, 7, 11);
+        let active_key = (AccountChallengeOperation::Delete, 8, 12);
+
+        state.challenges.insert(
+            expired_key,
+            AccountChallenge {
+                nonce: 1,
+                created_at: Instant::now() - ACCOUNT_CHALLENGE_TTL - Duration::from_secs(1),
+            },
+        );
+        state.challenges.insert(
+            active_key,
+            AccountChallenge {
+                nonce: 2,
+                created_at: Instant::now(),
+            },
+        );
+
+        state.purge_expired_challenges();
+
+        assert!(!state.challenges.contains_key(&expired_key));
+        assert!(state.challenges.contains_key(&active_key));
     }
 
     #[test]

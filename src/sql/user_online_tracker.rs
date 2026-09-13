@@ -1,6 +1,6 @@
 use crate::sql::connection_status::UserStatus;
+use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
-use std::sync::RwLock;
 
 fn select_primary_route(previous_primary: Option<i64>, connected: &HashSet<i64>) -> Option<i64> {
     previous_primary
@@ -276,11 +276,11 @@ impl PresenceTracker {
     }
 
     pub fn set_preference(&self, user_id: i64, status: UserStatus) {
-        self.preferences.write().unwrap().insert(user_id, status);
+        self.preferences.write().insert(user_id, status);
     }
 
     pub fn set_preferences(&self, preferences: HashMap<i64, UserStatus>) {
-        self.preferences.write().unwrap().extend(preferences);
+        self.preferences.write().extend(preferences);
     }
 
     pub fn load_preference(&self, user_id: i64, raw: &str) -> bool {
@@ -295,7 +295,6 @@ impl PresenceTracker {
     pub fn preference(&self, user_id: i64) -> UserStatus {
         self.preferences
             .read()
-            .unwrap()
             .get(&user_id)
             .cloned()
             .unwrap_or(UserStatus::user_online)
@@ -304,14 +303,21 @@ impl PresenceTracker {
     pub fn has_iota_route(&self, iota_id: i64) -> bool {
         self.routes
             .read()
-            .unwrap()
             .iotas
             .get(&iota_id)
             .is_some_and(|route| !route.connected_omikron_ids.is_empty())
     }
 
+    pub fn owns_iota_route(&self, iota_id: i64, omikron_id: i64) -> bool {
+        self.routes
+            .read()
+            .iotas
+            .get(&iota_id)
+            .is_some_and(|route| route.connected_omikron_ids.contains(&omikron_id))
+    }
+
     pub fn has_active_session_for_iota(&self, user_id: i64, iota_id: i64) -> bool {
-        let routes = self.routes.read().unwrap();
+        let routes = self.routes.read();
         routes
             .indices
             .sessions_by_user
@@ -332,7 +338,7 @@ impl PresenceTracker {
     }
 
     pub fn track_session(&self, user_id: i64, session_id: i64, omikron_id: i64, iota_id: i64) {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         Self::insert_session_locked(
             &mut routes,
             (user_id, session_id),
@@ -345,17 +351,30 @@ impl PresenceTracker {
     }
 
     pub fn remove_session(&self, user_id: i64, session_id: i64, omikron_id: i64) -> bool {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let removed =
             Self::remove_session_locked(&mut routes, (user_id, session_id), Some(omikron_id));
         Self::debug_assert_indices(&routes);
         removed
     }
 
+    pub fn remove_user_sessions(&self, user_id: i64) {
+        let mut routes = self.routes.write();
+        let session_ids = routes
+            .indices
+            .sessions_by_user
+            .get(&user_id)
+            .cloned()
+            .unwrap_or_default();
+        for session_id in session_ids {
+            Self::remove_session_locked(&mut routes, (user_id, session_id), None);
+        }
+        Self::debug_assert_indices(&routes);
+    }
+
     pub fn owns_session(&self, user_id: i64, session_id: i64, omikron_id: i64) -> bool {
         self.routes
             .read()
-            .unwrap()
             .sessions
             .get(&(user_id, session_id))
             .is_some_and(|route| route.omikron_id == omikron_id)
@@ -376,7 +395,7 @@ impl PresenceTracker {
     }
 
     pub fn remove_omikron(&self, omikron_id: i64) -> RemovedOmikronState {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let iota_ids = routes
             .indices
             .iotas_by_omikron
@@ -417,7 +436,7 @@ impl PresenceTracker {
     }
 
     pub fn remove_sessions_for_iota(&self, iota_id: i64, omikron_id: i64) {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let keys = routes
             .indices
             .sessions_by_omikron
@@ -445,7 +464,7 @@ impl PresenceTracker {
         omikron_id: i64,
         user_ids: Vec<i64>,
     ) {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let key = (user_id, session_id);
         Self::remove_subscription_locked(&mut routes, key);
         for target_user_id in user_ids {
@@ -479,7 +498,6 @@ impl PresenceTracker {
         let mut subscribers = self
             .routes
             .read()
-            .unwrap()
             .subscriptions
             .get(&target_user_id)
             .cloned()
@@ -497,7 +515,7 @@ impl PresenceTracker {
     }
 
     pub fn sessions_owned_by(&self, omikron_id: i64) -> Vec<(i64, i64, ClientSessionRoute)> {
-        let routes = self.routes.read().unwrap();
+        let routes = self.routes.read();
         let mut sessions = routes
             .indices
             .sessions_by_omikron
@@ -521,7 +539,7 @@ impl PresenceTracker {
         iota_ids: &[i64],
         sessions: &[(i64, i64, i64)],
     ) {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let old_sessions = routes
             .indices
             .sessions_by_omikron
@@ -573,18 +591,6 @@ impl PresenceTracker {
         Self::debug_assert_indices(&routes);
     }
 
-    pub fn iota_ids_owned_by(&self, omikron_id: i64) -> Vec<i64> {
-        let routes = self.routes.read().unwrap();
-        sorted_vec(
-            routes
-                .indices
-                .iotas_by_omikron
-                .get(&omikron_id)
-                .cloned()
-                .unwrap_or_default(),
-        )
-    }
-
     pub fn untrack_iota_connection(&self, iota_id: i64, omikron_id: i64) -> bool {
         let connections_empty = self.disconnect_iota(iota_id, omikron_id);
         self.remove_sessions_for_iota(iota_id, omikron_id);
@@ -594,26 +600,25 @@ impl PresenceTracker {
     pub fn primary_iota_route(&self, iota_id: i64) -> Option<i64> {
         self.routes
             .read()
-            .unwrap()
             .iotas
             .get(&iota_id)
             .and_then(|route| route.primary_omikron_id)
     }
 
     pub fn iota_connections(&self, iota_id: i64) -> Option<Vec<i64>> {
-        self.all_iota_routes().get(&iota_id).map(|route| {
-            let mut ids = route
-                .connected_omikron_ids
-                .iter()
-                .copied()
-                .collect::<Vec<_>>();
-            ids.sort_unstable();
-            ids
-        })
+        let routes = self.routes.read();
+        let route = routes.iotas.get(&iota_id)?;
+        let mut ids = route
+            .connected_omikron_ids
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        Some(ids)
     }
 
     pub fn routes_for_user(&self, user_id: i64) -> Vec<ClientSessionRoute> {
-        let routes = self.routes.read().unwrap();
+        let routes = self.routes.read();
         let mut user_routes = routes
             .indices
             .sessions_by_user
@@ -631,6 +636,22 @@ impl PresenceTracker {
         user_routes.into_iter().map(|(_, route)| route).collect()
     }
 
+    pub fn owns_user_route(&self, user_id: i64, omikron_id: i64) -> bool {
+        let routes = self.routes.read();
+        routes
+            .indices
+            .sessions_by_user
+            .get(&user_id)
+            .into_iter()
+            .flat_map(|session_ids| session_ids.iter())
+            .any(|session_id| {
+                routes
+                    .sessions
+                    .get(&(user_id, *session_id))
+                    .is_some_and(|route| route.omikron_id == omikron_id)
+            })
+    }
+
     pub fn user_route(&self, user_id: i64) -> Option<ClientSessionRoute> {
         self.routes_for_user(user_id).into_iter().next()
     }
@@ -640,7 +661,7 @@ impl PresenceTracker {
     }
 
     fn connect_iota_with_priority(&self, iota_id: i64, omikron_id: i64, primary: bool) {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let route = routes.iotas.entry(iota_id).or_default();
         route.connected_omikron_ids.insert(omikron_id);
         if primary || route.primary_omikron_id.is_none() {
@@ -656,14 +677,14 @@ impl PresenceTracker {
     }
 
     pub fn disconnect_iota(&self, iota_id: i64, omikron_id: i64) -> bool {
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let empty = Self::remove_iota_owner_locked(&mut routes, iota_id, omikron_id);
         Self::debug_assert_indices(&routes);
         empty
     }
 
     pub fn all_iota_routes(&self) -> HashMap<i64, IotaRoute> {
-        self.routes.read().unwrap().iotas.clone()
+        self.routes.read().iotas.clone()
     }
 
     pub fn connection_routes(&self) -> HashMap<i64, HashMap<i64, Vec<i64>>> {
@@ -690,7 +711,7 @@ mod tests {
     use crate::sql::connection_status::UserStatus;
 
     fn check_index_consistency(tracker: &PresenceTracker) -> Result<(), String> {
-        PresenceTracker::check_indices(&tracker.routes.read().unwrap())
+        PresenceTracker::check_indices(&tracker.routes.read())
     }
 
     #[test]
@@ -770,13 +791,7 @@ mod tests {
 
         assert_eq!(tracker.preference(7), UserStatus::user_dnd);
         assert_eq!(
-            tracker
-                .routes
-                .read()
-                .unwrap()
-                .sessions
-                .get(&(7, 3))
-                .cloned(),
+            tracker.routes.read().sessions.get(&(7, 3)).cloned(),
             Some(ClientSessionRoute {
                 omikron_id: 42,
                 iota_id: 11,
@@ -865,6 +880,18 @@ mod tests {
 
         tracker.remove_session(7, 10, 40);
         assert_eq!(tracker.routes_for_user(7).len(), 1);
+    }
+
+    #[test]
+    fn route_ownership_is_scoped_to_one_omikron() {
+        let tracker = PresenceTracker::default();
+        tracker.connect_iota(11, 42);
+        tracker.track_session(7, 3, 42, 11);
+
+        assert!(tracker.owns_user_route(7, 42));
+        assert!(!tracker.owns_user_route(7, 43));
+        assert!(tracker.owns_iota_route(11, 42));
+        assert!(!tracker.owns_iota_route(11, 43));
     }
 
     #[test]
@@ -961,7 +988,6 @@ mod tests {
             tracker
                 .routes
                 .read()
-                .unwrap()
                 .indices
                 .sessions_by_user
                 .get(&7)
@@ -972,7 +998,6 @@ mod tests {
             tracker
                 .routes
                 .read()
-                .unwrap()
                 .indices
                 .targets_by_subscriber
                 .get(&(7, 3))
@@ -987,20 +1012,11 @@ mod tests {
         assert_eq!(tracker.subscribers(22).len(), 1);
         tracker.remove_session(7, 3, 42);
         assert!(check_index_consistency(&tracker).is_ok());
+        assert!(tracker.routes.read().indices.sessions_by_user.is_empty());
         assert!(
             tracker
                 .routes
                 .read()
-                .unwrap()
-                .indices
-                .sessions_by_user
-                .is_empty()
-        );
-        assert!(
-            tracker
-                .routes
-                .read()
-                .unwrap()
                 .indices
                 .targets_by_subscriber
                 .is_empty()
@@ -1029,7 +1045,6 @@ mod tests {
         tracker
             .routes
             .write()
-            .unwrap()
             .indices
             .sessions_by_user
             .get_mut(&7)

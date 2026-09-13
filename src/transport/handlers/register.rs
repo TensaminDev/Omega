@@ -1,5 +1,6 @@
 use super::super::connection::{
     OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
+    require_iota_data_route,
 };
 use crate::{
     db::{iota_repo, user_repo},
@@ -25,8 +26,21 @@ pub async fn get_register(
             .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
+    require_iota_data_route(&connection, iota_id)?;
+    let request_token = match value.get_data(DataType::RegisterId).as_str() {
+        Some(token) => match uuid::Uuid::parse_str(token) {
+            Ok(token) => Some(token),
+            Err(_) => {
+                return connection
+                    .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
+                    .await;
+            }
+        },
+        None => None,
+    };
     let (register_id, registration_token) =
-        user_repo::allocate_registration(IotaId::from(iota_id), value.require_id()?).await?;
+        user_repo::allocate_registration(IotaId::from(iota_id), request_token, value.require_id()?)
+            .await?;
     let response = CommunicationValue::new(CommunicationType::GetRegister)
         .with_id(value.require_id()?)
         .add_typed_default(
@@ -50,7 +64,7 @@ pub async fn complete_iota(
             .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
-    match iota_repo::create_new_iota(public_key).await {
+    match iota_repo::get_or_create_iota(public_key).await {
         Ok(id) => {
             connection
                 .send(
@@ -111,8 +125,6 @@ pub async fn complete_user(
             .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
-    // Omikron supplies the authenticated Iota ID in the payload.  The lease
-    // check below binds completion to that Iota rather than trusting sender.
     let iota_id = value
         .get_data(DataType::IotaId)
         .as_number()
@@ -123,6 +135,7 @@ pub async fn complete_user(
             .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
+    require_iota_data_route(&connection, iota_id)?;
 
     match user_repo::register_complete_user(
         UserId::from(user_id),
@@ -135,8 +148,11 @@ pub async fn complete_user(
     .await
     {
         Ok(()) => {
-            if let Err(error) =
-                crate::transport::omikron_manager::publish_iota_user_snapshot(iota_id).await
+            if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                &connection.state(),
+                iota_id,
+            )
+            .await
             {
                 crate::log_in!(
                     crate::util::logger::PrintType::General,

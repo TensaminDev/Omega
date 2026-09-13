@@ -3,6 +3,7 @@ use super::super::connection::{
 };
 use crate::{
     db::{iota_repo, user_repo},
+    error::OmegaError,
     models::{IotaId, UserId},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -11,6 +12,11 @@ use mtp::{
     crypto::PublicKeyBundle,
 };
 use std::sync::Arc;
+
+const MAX_DISPLAY_BYTES: usize = 255;
+const MAX_STATUS_BYTES: usize = 255;
+const MAX_ABOUT_BYTES: usize = 1000;
+const MAX_AVATAR_BYTES: usize = 65_535;
 
 fn connections(connection: &OmikronConnection, iota_id: i64) -> DataValue {
     DataValue::Array(
@@ -88,7 +94,7 @@ pub async fn get_user(
             response.add_typed_default(DataType::Avatar, DataValue::Str(STANDARD.encode(avatar)));
     }
     let route = state.presence.user_route(id);
-    let private_request = sender == id;
+    let private_request = sender == id && state.presence.owns_user_route(id, connection.id_i64());
     let resolved_status = if private_request {
         if !state
             .presence
@@ -198,73 +204,163 @@ pub async fn get_iota(
     connection.send(&response).await
 }
 
-async fn update_user(
-    connection: Arc<OmikronConnection>,
-    value: CommunicationValue,
-) -> OmikronResult<()> {
-    let request_id = value.require_id()?;
-    let id = UserId::from(value.require_sender_i64()?);
-    let mut error = None;
-    if let Some(name) = value.get_data(DataType::Username).as_str() {
-        error = user_repo::change_username(id, name.to_owned())
-            .await
-            .err()
-            .map(|e| e.to_string());
-    }
-    if error.is_none()
-        && let Some(name) = value.get_data(DataType::Display).as_str()
-    {
-        error = user_repo::change_display_name(id, name.to_owned())
-            .await
-            .err()
-            .map(|e| e.to_string());
-    }
-    if error.is_none()
-        && let Some(avatar) = value.get_data(DataType::Avatar).as_str()
-    {
-        error = user_repo::change_avatar(id, avatar.to_owned())
-            .await
-            .err()
-            .map(|e| e.to_string());
-    }
-    if error.is_none()
-        && let Some(about) = value.get_data(DataType::About).as_str()
-    {
-        error = user_repo::change_about(id, about.to_owned())
-            .await
-            .err()
-            .map(|e| e.to_string());
-    }
-    if error.is_none()
-        && let Some(status) = value.get_data(DataType::Status).as_str()
-    {
-        error = user_repo::change_status(id, status.to_owned())
-            .await
-            .err()
-            .map(|e| e.to_string());
-    }
-    if error.is_none()
-        && let Some(key) = value
-            .get_data(DataType::PublicKey)
-            .as_str()
-            .and_then(|key| PublicKeyBundle::from_base64(key).ok())
-    {
-        error = user_repo::change_keys(id, key)
-            .await
-            .err()
-            .map(|e| e.to_string());
-    }
-    let response = match error {
-        None => CommunicationValue::new(CommunicationType::Success),
-        Some(error) => CommunicationValue::new(CommunicationType::ErrorInternal)
-            .add_typed_default(DataType::ErrorType, DataValue::Str(error)),
+fn optional_string(
+    value: &CommunicationValue,
+    data_type: DataType,
+    max_bytes: usize,
+    field: &'static str,
+) -> Result<Option<String>, OmegaError> {
+    let Some(value) = value.get_data(data_type) else {
+        return Ok(None);
     };
-    connection.send(&response.with_id(request_id)).await
+    let value = value
+        .as_str()
+        .ok_or_else(|| OmegaError::Validation(format!("invalid {field}")))?;
+    if value.len() > max_bytes {
+        return Err(OmegaError::Validation(format!("{field} is too long")));
+    }
+    Ok(Some(value.to_owned()))
+}
+
+fn parse_user_patch(value: &CommunicationValue) -> Result<user_repo::UserPatch, OmegaError> {
+    let username = optional_string(value, DataType::Username, 15, "username")?;
+    if username
+        .as_deref()
+        .is_some_and(|username| !user_repo::valid_username(username))
+    {
+        return Err(OmegaError::Validation("invalid username".into()));
+    }
+    let avatar = match value.get_data(DataType::Avatar) {
+        None => None,
+        Some(value) => {
+            let encoded = value
+                .as_str()
+                .ok_or_else(|| OmegaError::Validation("invalid avatar".into()))?;
+            let decoded = STANDARD
+                .decode(encoded)
+                .map_err(|_| OmegaError::Validation("invalid avatar".into()))?;
+            if decoded.len() > MAX_AVATAR_BYTES {
+                return Err(OmegaError::Validation("avatar is too large".into()));
+            }
+            Some(decoded)
+        }
+    };
+    let public_key = match value.get_data(DataType::PublicKey) {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| OmegaError::Validation("invalid public key".into()))
+                .and_then(|encoded| {
+                    PublicKeyBundle::from_base64(encoded)
+                        .map_err(|_| OmegaError::Validation("invalid public key".into()))
+                })?,
+        ),
+    };
+    let presence_preference = match value.get_data(DataType::OnlineStatus) {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .and_then(crate::sql::connection_status::UserStatus::from_client_preference)
+                .ok_or_else(|| OmegaError::Validation("invalid online status".into()))?,
+        ),
+    };
+
+    Ok(user_repo::UserPatch {
+        username,
+        display: optional_string(value, DataType::Display, MAX_DISPLAY_BYTES, "display")?,
+        avatar,
+        about: optional_string(value, DataType::About, MAX_ABOUT_BYTES, "about")?,
+        status: optional_string(value, DataType::Status, MAX_STATUS_BYTES, "status")?,
+        public_key,
+        presence_preference,
+    })
+}
+
+fn user_patch_error_type(error: &OmegaError) -> CommunicationType {
+    match error {
+        OmegaError::Validation(_) => CommunicationType::ErrorInvalidData,
+        OmegaError::NotFound => CommunicationType::ErrorNotFound,
+        _ => CommunicationType::ErrorInternal,
+    }
 }
 
 pub async fn change_user(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    update_user(connection, value).await
+    let request_id = value.require_id()?;
+    let id = UserId::from(value.require_sender_i64()?);
+    let patch = match parse_user_patch(&value) {
+        Ok(patch) => patch,
+        Err(error @ OmegaError::Validation(_)) => {
+            return connection
+                .send_error_response(request_id, user_patch_error_type(&error))
+                .await;
+        }
+        Err(error) => return Err(error),
+    };
+    let user = if patch.presence_preference.is_some() {
+        match user_repo::get_by_user_id(id).await {
+            Ok(user) => Some(user),
+            Err(OmegaError::NotFound) => {
+                return connection
+                    .send_error_response(request_id, CommunicationType::ErrorNotFound)
+                    .await;
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    if let Err(error) = user_repo::update_user_patch(id, &patch).await {
+        return connection
+            .send_error_response(request_id, user_patch_error_type(&error))
+            .await;
+    }
+    if let (Some(user), Some(preference)) = (user, patch.presence_preference) {
+        super::presence::apply_committed_preference(&connection.state(), &user, preference).await;
+    }
+    connection
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(request_id))
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_user_patch, user_patch_error_type};
+    use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
+
+    #[test]
+    fn rejects_invalid_fields_before_building_patch() {
+        let invalid_username = CommunicationValue::new(CommunicationType::ChangeUserData)
+            .add_typed_default(DataType::Username, DataValue::Str("Invalid".into()));
+        let invalid_key = CommunicationValue::new(CommunicationType::ChangeUserData)
+            .add_typed_default(DataType::PublicKey, DataValue::Str("not-a-key".into()));
+
+        assert!(parse_user_patch(&invalid_username).is_err());
+        let error = parse_user_patch(&invalid_key).unwrap_err();
+        assert_eq!(
+            user_patch_error_type(&error),
+            CommunicationType::ErrorInvalidData
+        );
+    }
+
+    #[test]
+    fn parses_profile_and_presence_as_one_patch() {
+        let value = CommunicationValue::new(CommunicationType::ChangeUserData)
+            .add_typed_default(DataType::Display, DataValue::Str("Alex".into()))
+            .add_typed_default(
+                DataType::OnlineStatus,
+                DataValue::Str("user_invisible".into()),
+            );
+
+        let patch = parse_user_patch(&value).unwrap();
+        assert_eq!(patch.display.as_deref(), Some("Alex"));
+        assert_eq!(
+            patch.presence_preference.map(|value| value.to_string()),
+            Some("user_invisible".into())
+        );
+    }
 }

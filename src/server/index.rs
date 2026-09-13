@@ -32,7 +32,7 @@ Available Routes:
 All IDs must be positive decimal integers. The connections endpoint reports
 live in-memory state; it is empty after an Omega restart until Omikrons sync.
 
-All other routes will return this documentation.
+All non-API routes will return this documentation.
 "#;
 
     with_cors(

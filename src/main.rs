@@ -13,7 +13,7 @@ mod util;
 pub use error::{OmegaError, Result};
 
 use crate::db::initialize;
-use crate::state::OmegaState;
+use crate::state::{OmegaState, spawn_challenge_cleanup};
 use crate::transport::omikron_connection;
 use crate::transport::omikron_manager;
 use crate::util::file_util::get_directory;
@@ -35,17 +35,16 @@ async fn main() {
         return;
     }
     let _ = from_path(Path::new(&get_directory()).join(".env"));
-    startup();
-    log_in!("Incoming messages");
-    log_out!("Outgoing messages");
-
     let config = match OmegaConfig::from_env() {
         Ok(config) => config,
         Err(error) => {
-            log!("[FATAL] Omega configuration is invalid: {}", error);
+            eprintln!("[FATAL] Omega configuration is invalid: {error}");
             return;
         }
     };
+    startup(config.logger_queue_capacity);
+    log_in!("Incoming messages");
+    log_out!("Outgoing messages");
     if middleware::initialize_config(config.rate_limits.clone()).is_err() {
         log!("[FATAL] Omega rate-limit configuration was initialized more than once");
         return;
@@ -71,6 +70,7 @@ async fn main() {
         log!("  DB");
     }
     let rate_limit_cleanup = crate::server::middleware::spawn_cleanup_task();
+    let challenge_cleanup = spawn_challenge_cleanup(state.clone());
     let short_link_cleanup = tokio::spawn(async {
         let mut ticker = interval(Duration::from_secs(24 * 60 * 60));
         loop {
@@ -85,9 +85,10 @@ async fn main() {
             }
         }
     });
-    let snapshot_outbox_worker = omikron_manager::spawn_iota_snapshot_outbox_worker();
-    let provisioning_outbox_worker = omikron_manager::spawn_user_provisioning_outbox_worker();
-    let erasure_outbox_worker = omikron_manager::spawn_user_erasure_outbox_worker();
+    let snapshot_outbox_worker = omikron_manager::spawn_iota_snapshot_outbox_worker(state.clone());
+    let provisioning_outbox_worker =
+        omikron_manager::spawn_user_provisioning_outbox_worker(state.clone());
+    let erasure_outbox_worker = omikron_manager::spawn_user_erasure_outbox_worker(state.clone());
     let port: u16 = env::var("PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -111,6 +112,7 @@ async fn main() {
         }
     }
     rate_limit_cleanup.abort();
+    challenge_cleanup.abort();
     short_link_cleanup.abort();
     snapshot_outbox_worker.abort();
     provisioning_outbox_worker.abort();

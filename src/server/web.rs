@@ -1,5 +1,5 @@
-use crate::identity::OmegaIdentity;
 use crate::server::{api, index::index_handler};
+use crate::state::OmegaState;
 use http::{Method, StatusCode};
 use mtp::webserver::{HttpRequest, HttpResponse, RouteParams, WebServerConfig};
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -7,51 +7,64 @@ use std::{future::Future, pin::Pin, sync::Arc};
 type RouteFuture = Pin<Box<dyn Future<Output = HttpResponse> + Send>>;
 
 fn api_handler(
-    identity: Arc<OmegaIdentity>,
+    state: Arc<OmegaState>,
 ) -> impl Fn(HttpRequest, HttpResponse) -> RouteFuture + Send + Sync + 'static {
-    move |request, response| Box::pin(api::handle(request, response, identity.clone()))
+    move |request, response| Box::pin(api::handle(request, response, state.clone()))
 }
 
 fn api_pattern_handler(
-    identity: Arc<OmegaIdentity>,
+    state: Arc<OmegaState>,
 ) -> impl Fn(HttpRequest, HttpResponse, RouteParams) -> RouteFuture + Send + Sync + 'static {
     move |request, response, params| {
         Box::pin(api::handle_pattern(
             request,
             response,
             params,
-            identity.clone(),
+            state.clone(),
         ))
     }
 }
 
 pub fn build_web_config(
-    identity: Arc<OmegaIdentity>,
+    state: Arc<OmegaState>,
 ) -> Result<WebServerConfig, mtp::webserver::RouterError> {
     WebServerConfig::new()
-        .route("/api/download/iota_frontend", api_handler(identity.clone()))?
-        .route("/api/get/omikron", api_handler(identity.clone()))?
-        .route("/api/get/connections", api_handler(identity.clone()))?
-        .route("/api/get/public_key", api_handler(identity.clone()))?
-        .route_pattern(
-            "/api/get/omikron/{id}",
-            api_pattern_handler(identity.clone()),
-        )?
+        .route("/.well-known/tensamin", api_handler(state.clone()))?
+        .route("/api/download/iota_frontend", api_handler(state.clone()))?
+        .route("/api/get/omikron", api_handler(state.clone()))?
+        .route("/api/get/connections", api_handler(state.clone()))?
+        .route("/api/get/public_key", api_handler(state.clone()))?
+        .route_pattern("/api/get/omikron/{id}", api_pattern_handler(state.clone()))?
         .route_pattern(
             "/api/get/registration-omikron/{id}",
-            api_pattern_handler(identity.clone()),
+            api_pattern_handler(state.clone()),
         )?
-        .route_pattern("/api/get/iota/{id}", api_pattern_handler(identity.clone()))?
+        .route_pattern("/api/get/iota/{id}", api_pattern_handler(state.clone()))?
+        .route_pattern("/api/get/id/{username}", api_pattern_handler(state.clone()))?
+        .route_pattern("/api/get/user/{id}", api_pattern_handler(state.clone()))?
         .route_pattern(
-            "/api/get/id/{username}",
-            api_pattern_handler(identity.clone()),
+            "/federation/v1/users/id/{id}",
+            api_pattern_handler(state.clone()),
         )?
-        .route_pattern("/api/get/user/{id}", api_pattern_handler(identity.clone()))?
-        .route_pattern("/direct/{short}", api_pattern_handler(identity))?
-        .fallback(|request, response| async move {
-            if request.method == Method::OPTIONS {
-                crate::server::with_cors(response.status(StatusCode::NO_CONTENT))
-            } else {
+        .route_pattern(
+            "/federation/v1/users/name/{username}",
+            api_pattern_handler(state.clone()),
+        )?
+        .route_pattern(
+            "/federation/v1/iotas/{id}/node",
+            api_pattern_handler(state.clone()),
+        )?
+        .route_pattern("/direct/{short}", api_pattern_handler(state.clone()))?
+        .fallback(move |request, response| {
+            let state = state.clone();
+            async move {
+                if request.uri.path() == "/api" || request.uri.path().starts_with("/api/") {
+                    return api::handle(request, response, state).await;
+                }
+                if request.method == Method::OPTIONS {
+                    return crate::server::with_cors(response.status(StatusCode::NO_CONTENT));
+                }
+
                 index_handler(response)
             }
         })

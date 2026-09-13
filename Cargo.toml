@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-mtp = { git = "https://git.methanium.net/Methanium/mtp.git", rev = "a135d0f0c2b35147011905f8ee0fc37050f69a6c", features = [
+mtp = { git = "https://git.methanium.net/Methanium/mtp.git", rev = "1f19a0d897c265d1e3f590a876f95e766ff99318", features = [
     "crypto",
     "files",
     "raw",
@@ -12,12 +12,15 @@ mtp = { git = "https://git.methanium.net/Methanium/mtp.git", rev = "a135d0f0c2b3
 ] }
 
 ansi_term = "0.12.1"
+argon2 = "0.5.3"
 base64 = "0.23.1"
 bytes = "1"
 dashmap = "6.2.1"
 dotenv = "0.15.0"
 http = "1"
+iota-identity = { path = "../iota/iota-identity" }
 once_cell = "1.21.4"
+parking_lot = "0.12.5"
 rand = "0.10.2"
 rustls = { version = "0.23.43", default-features = false, features = [
     "std",

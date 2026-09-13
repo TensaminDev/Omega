@@ -35,7 +35,9 @@ pub async fn get(
                 "SQL get_notifications error: {}",
                 error
             );
-            Vec::new()
+            return connection
+                .send_error_response(request_id, CommunicationType::ErrorInternal)
+                .await;
         }
     };
     let response = CommunicationValue::new(CommunicationType::GetNotifications)
@@ -68,14 +70,17 @@ pub async fn read(
             "SQL read_notification error: {}",
             error
         );
+        return connection
+            .send_error_response(request_id, CommunicationType::ErrorInternal)
+            .await;
     } else {
         let response =
             CommunicationValue::new(CommunicationType::ReadNotification).with_id(request_id);
-        let _ = connection.send(&response).await;
+        let _ = connection.clone().send(&response).await;
         let sync = CommunicationValue::new(CommunicationType::ReadNotification)
             .with_receiver(receiver as u64)
             .add_typed_default(DataType::SenderId, DataValue::SignedNumber(other.into()));
-        crate::transport::omikron_manager::send_to_user(receiver, &sync).await;
+        crate::transport::omikron_manager::send_to_user(&connection.state(), receiver, &sync).await;
     }
     Ok(())
 }
@@ -113,17 +118,10 @@ pub async fn push(
         }
         return Ok(());
     };
-    let source_omikron = connection
-        .clone()
-        .get_omikron_id()
-        .await
-        .ok_or(crate::OmegaError::NotConnected)?;
     if !connection
         .state()
         .presence
-        .routes_for_user(sender)
-        .iter()
-        .any(|route| route.omikron_id == source_omikron)
+        .owns_user_route(sender, connection.id_i64())
     {
         if let Some(request_id) = request_id {
             return connection
@@ -140,16 +138,21 @@ pub async fn push(
             "SQL add_notification error: {}",
             error
         );
+        if let Some(request_id) = request_id {
+            return connection
+                .send_error_response(request_id, CommunicationType::ErrorInternal)
+                .await;
+        }
     } else {
         if let Some(request_id) = request_id {
             let response =
                 CommunicationValue::new(CommunicationType::PushNotification).with_id(request_id);
-            let _ = connection.send(&response).await;
+            let _ = connection.clone().send(&response).await;
         }
         let push = CommunicationValue::new(CommunicationType::PushNotification)
             .with_receiver(receiver as u64)
             .add_typed_default(DataType::SenderId, DataValue::SignedNumber(sender.into()));
-        crate::transport::omikron_manager::send_to_user(receiver, &push).await;
+        crate::transport::omikron_manager::send_to_user(&connection.state(), receiver, &push).await;
     }
     Ok(())
 }

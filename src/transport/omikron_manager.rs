@@ -2,17 +2,12 @@ use crate::db::user_repo;
 use crate::state::OmegaState;
 use crate::transport::connection::OmikronConnection;
 use crate::transport::omikron_connection::OmikronResult;
-use dashmap::DashMap;
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
-use once_cell::sync::Lazy;
 use rand::prelude::IteratorRandom;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::interval;
-
-pub static OMIKRON_CONNECTIONS: Lazy<DashMap<i64, Arc<OmikronConnection>>> =
-    Lazy::new(DashMap::new);
 
 pub async fn add_omikron(conn: Arc<OmikronConnection>) {
     let id = match conn.clone().get_omikron_id().await {
@@ -23,91 +18,75 @@ pub async fn add_omikron(conn: Arc<OmikronConnection>) {
         }
     };
 
-    if let Some(old) = OMIKRON_CONNECTIONS.insert(id, conn.clone()) {
+    let state = conn.state();
+    if let Some(old) = state.register_omikron(id, &conn) {
         old.close().await;
     }
-    let _ = flush_iota_snapshot_outbox().await;
+    let _ = flush_iota_snapshot_outbox(&state).await;
 }
 
 pub async fn remove_omikron(omikron_id: i64, connection: &Arc<OmikronConnection>) -> bool {
-    OMIKRON_CONNECTIONS
-        .remove_if(&omikron_id, |_, current| Arc::ptr_eq(current, connection))
-        .is_some()
+    connection.state().remove_omikron(omikron_id, connection)
 }
 
-pub fn get_connected_omikron(omikron_id: i64) -> Option<Arc<OmikronConnection>> {
-    OMIKRON_CONNECTIONS
-        .get(&omikron_id)
-        .map(|connection| connection.clone())
+pub fn get_iota_primary_omikron_connection(state: &OmegaState, iota_id: i64) -> Option<i64> {
+    state.presence.primary_iota_route(iota_id)
 }
 
-pub fn get_state() -> Option<Arc<OmegaState>> {
-    OMIKRON_CONNECTIONS
-        .iter()
-        .next()
-        .map(|connection| connection.value().state())
-}
-
-pub fn get_iota_primary_omikron_connection(iota_id: i64) -> Option<i64> {
-    get_state().and_then(|state| state.presence.primary_iota_route(iota_id))
-}
-
-pub async fn get_all_connections()
--> Result<std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>>, ()> {
-    match get_state() {
-        Some(state) => {
-            let mut result = state.presence.connection_routes();
-            let iota_ids = state
+pub async fn get_all_connections(
+    state: &OmegaState,
+) -> Result<std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>>, ()> {
+    let mut result = state.presence.connection_routes();
+    let iota_ids = state
+        .presence
+        .all_iota_routes()
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    let users = user_repo::get_users_by_iota_ids(&iota_ids)
+        .await
+        .map_err(|_| ())?;
+    for user in users {
+        if let Some(iota_id) = user.iota_id {
+            for omikron_id in state
                 .presence
-                .all_iota_routes()
-                .keys()
-                .copied()
-                .collect::<Vec<_>>();
-            let users = user_repo::get_users_by_iota_ids(&iota_ids)
-                .await
-                .map_err(|_| ())?;
-            for user in users {
-                if let Some(iota_id) = user.iota_id {
-                    for omikron_id in state
-                        .presence
-                        .iota_connections(iota_id.0)
-                        .unwrap_or_default()
-                    {
-                        if let Some(users) = result
-                            .get_mut(&omikron_id)
-                            .and_then(|iotas| iotas.get_mut(&iota_id.0))
-                        {
-                            users.push(user.id.0);
-                        }
-                    }
+                .iota_connections(iota_id.0)
+                .unwrap_or_default()
+            {
+                if let Some(users) = result
+                    .get_mut(&omikron_id)
+                    .and_then(|iotas| iotas.get_mut(&iota_id.0))
+                {
+                    users.push(user.id.0);
                 }
             }
-            for iotas in result.values_mut() {
-                for users in iotas.values_mut() {
-                    users.sort_unstable();
-                    users.dedup();
-                }
-            }
-            Ok(result)
         }
-        None => Ok(std::collections::HashMap::new()),
     }
+    for iotas in result.values_mut() {
+        for users in iotas.values_mut() {
+            users.sort_unstable();
+            users.dedup();
+        }
+    }
+    Ok(result)
 }
 
 pub async fn send_state_batch(
+    state: &OmegaState,
     omikron_id: i64,
     notifications: Vec<CommunicationValue>,
 ) -> OmikronResult<()> {
-    let connection =
-        get_connected_omikron(omikron_id).ok_or(crate::error::OmegaError::NotConnected)?;
+    let connection = state
+        .connected_omikron(omikron_id)
+        .ok_or(crate::error::OmegaError::NotConnected)?;
     connection.send_messages(&notifications).await
 }
 
-pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
-    let keys: Vec<_> = OMIKRON_CONNECTIONS.iter().map(|e| *e.key()).collect();
+pub async fn get_random_omikron(state: &OmegaState) -> Result<Arc<OmikronConnection>, ()> {
+    let keys = state.connected_omikron_ids();
 
     if let Some(key) = keys.into_iter().choose(&mut rand::rng())
-        && let Some(connection) = get_connected_omikron(key)
+        && let Some(connection) = state.connected_omikron(key)
     {
         return Ok(connection);
     }
@@ -115,12 +94,10 @@ pub async fn get_random_omikron() -> Result<Arc<OmikronConnection>, ()> {
     Err(())
 }
 
-pub async fn send_to_user(user_id: i64, cv: &CommunicationValue) {
-    if let Some(state) = get_state() {
-        for user_route in state.presence.routes_for_user(user_id) {
-            if let Some(omikron_conn) = OMIKRON_CONNECTIONS.get(&user_route.omikron_id) {
-                let _ = omikron_conn.value().clone().send_message(cv).await;
-            }
+pub async fn send_to_user(state: &OmegaState, user_id: i64, cv: &CommunicationValue) {
+    for user_route in state.presence.routes_for_user(user_id) {
+        if let Some(connection) = state.connected_omikron(user_route.omikron_id) {
+            let _ = connection.send_message(cv).await;
         }
     }
 }
@@ -130,8 +107,7 @@ pub async fn send_to_user(user_id: i64, cv: &CommunicationValue) {
  * Omikron keeps a local authorization index, so sending only a primary route
  * leaves the remaining relays stale after registration or migration.
  */
-pub async fn publish_iota_user_snapshot(iota_id: i64) -> OmikronResult<()> {
-    let state = get_state().ok_or(crate::error::OmegaError::NotConnected)?;
+pub async fn publish_iota_user_snapshot(state: &OmegaState, iota_id: i64) -> OmikronResult<()> {
     let omikron_ids = state
         .presence
         .iota_connections(iota_id)
@@ -144,23 +120,35 @@ pub async fn publish_iota_user_snapshot(iota_id: i64) -> OmikronResult<()> {
     let snapshot = CommunicationValue::new(CommunicationType::IotaUserData)
         .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
         .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
+    let mut failures = Vec::new();
     for omikron_id in omikron_ids {
-        let connection =
-            get_connected_omikron(omikron_id).ok_or(crate::error::OmegaError::NotConnected)?;
-        connection.send(&snapshot).await?;
+        match state.connected_omikron(omikron_id) {
+            Some(connection) => {
+                if let Err(error) = connection.send(&snapshot).await {
+                    failures.push(format!("Omikron {omikron_id}: {error}"));
+                }
+            }
+            None => failures.push(format!("Omikron {omikron_id}: connection disappeared")),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(crate::error::OmegaError::Transport(format!(
+            "Iota snapshot delivery failed: {}",
+            failures.join(", ")
+        )));
     }
     Ok(())
 }
 
-pub async fn flush_iota_snapshot_outbox() -> OmikronResult<()> {
-    for iota_id in user_repo::pending_iota_snapshots().await? {
-        match publish_iota_user_snapshot(iota_id.0).await {
+pub async fn flush_iota_snapshot_outbox(state: &OmegaState) -> OmikronResult<()> {
+    for snapshot in user_repo::pending_iota_snapshots().await? {
+        match publish_iota_user_snapshot(state, snapshot.iota_id.0).await {
             Ok(()) => {
-                if let Err(error) = user_repo::complete_iota_snapshot(iota_id).await {
+                if let Err(error) = user_repo::complete_iota_snapshot(&snapshot).await {
                     crate::log_in!(
                         crate::util::logger::PrintType::General,
                         "Could not complete Iota snapshot outbox entry for {}: {}",
-                        iota_id.0,
+                        snapshot.iota_id.0,
                         error
                     );
                 }
@@ -169,7 +157,7 @@ pub async fn flush_iota_snapshot_outbox() -> OmikronResult<()> {
                 crate::log_in!(
                     crate::util::logger::PrintType::General,
                     "Could not publish Iota snapshot for {}: {}",
-                    iota_id.0,
+                    snapshot.iota_id.0,
                     error
                 );
             }
@@ -178,12 +166,12 @@ pub async fn flush_iota_snapshot_outbox() -> OmikronResult<()> {
     Ok(())
 }
 
-pub fn spawn_iota_snapshot_outbox_worker() -> JoinHandle<()> {
-    tokio::spawn(async {
+pub fn spawn_iota_snapshot_outbox_worker(state: Arc<OmegaState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let mut retry = interval(Duration::from_secs(30));
         loop {
             retry.tick().await;
-            if let Err(error) = flush_iota_snapshot_outbox().await {
+            if let Err(error) = flush_iota_snapshot_outbox(&state).await {
                 crate::log_in!(
                     crate::util::logger::PrintType::General,
                     "Could not load Iota snapshot outbox: {}",
@@ -194,16 +182,16 @@ pub fn spawn_iota_snapshot_outbox_worker() -> JoinHandle<()> {
     })
 }
 
-pub async fn deliver_pending_erasures(iota_id: i64) {
+pub async fn deliver_pending_erasures(state: &OmegaState, iota_id: i64) {
     let Ok(users) =
         user_repo::pending_erasures_for_iota(crate::models::IotaId::from(iota_id)).await
     else {
         return;
     };
-    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else {
+    let Some(omikron_id) = get_iota_primary_omikron_connection(state, iota_id) else {
         return;
     };
-    let Some(connection) = get_connected_omikron(omikron_id) else {
+    let Some(connection) = state.connected_omikron(omikron_id) else {
         return;
     };
     for user_id in users {
@@ -223,16 +211,16 @@ pub async fn deliver_pending_erasures(iota_id: i64) {
 
 /* Provisioning retries until the destination Iota has persisted public
  * account metadata and acknowledges it. Credentials never enter this path. */
-pub async fn deliver_pending_user_provisioning(iota_id: i64) {
+pub async fn deliver_pending_user_provisioning(state: &OmegaState, iota_id: i64) {
     let Ok(users) =
         user_repo::pending_iota_user_provisioning(crate::models::IotaId::from(iota_id)).await
     else {
         return;
     };
-    let Some(omikron_id) = get_iota_primary_omikron_connection(iota_id) else {
+    let Some(omikron_id) = get_iota_primary_omikron_connection(state, iota_id) else {
         return;
     };
-    let Some(connection) = get_connected_omikron(omikron_id) else {
+    let Some(connection) = state.connected_omikron(omikron_id) else {
         return;
     };
     for user in users {
@@ -266,16 +254,16 @@ pub async fn deliver_pending_user_provisioning(iota_id: i64) {
     }
 }
 
-pub fn spawn_user_provisioning_outbox_worker() -> JoinHandle<()> {
-    tokio::spawn(async {
+pub fn spawn_user_provisioning_outbox_worker(state: Arc<OmegaState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let mut retry = interval(Duration::from_secs(30));
         loop {
             retry.tick().await;
             match user_repo::pending_provisioning_iota_ids().await {
                 Ok(iota_ids) => {
                     for iota_id in iota_ids {
-                        if get_iota_primary_omikron_connection(iota_id.0).is_some() {
-                            deliver_pending_user_provisioning(iota_id.0).await;
+                        if get_iota_primary_omikron_connection(&state, iota_id.0).is_some() {
+                            deliver_pending_user_provisioning(&state, iota_id.0).await;
                         }
                     }
                 }
@@ -289,16 +277,16 @@ pub fn spawn_user_provisioning_outbox_worker() -> JoinHandle<()> {
     })
 }
 
-pub fn spawn_user_erasure_outbox_worker() -> JoinHandle<()> {
-    tokio::spawn(async {
+pub fn spawn_user_erasure_outbox_worker(state: Arc<OmegaState>) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let mut retry = interval(Duration::from_secs(30));
         loop {
             retry.tick().await;
             match user_repo::pending_erasure_iota_ids().await {
                 Ok(iota_ids) => {
                     for iota_id in iota_ids {
-                        if get_iota_primary_omikron_connection(iota_id.0).is_some() {
-                            deliver_pending_erasures(iota_id.0).await;
+                        if get_iota_primary_omikron_connection(&state, iota_id.0).is_some() {
+                            deliver_pending_erasures(&state, iota_id.0).await;
                         }
                     }
                 }

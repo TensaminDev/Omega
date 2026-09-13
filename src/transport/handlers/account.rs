@@ -12,21 +12,6 @@ use mtp::{
 };
 use std::sync::Arc;
 
-async fn delete(
-    connection: Arc<OmikronConnection>,
-    value: CommunicationValue,
-    result: impl std::future::Future<Output = crate::error::Result<()>>,
-) -> OmikronResult<()> {
-    let response = match result.await {
-        Ok(()) => CommunicationValue::new(CommunicationType::Success),
-        Err(error) => CommunicationValue::new(CommunicationType::ErrorInternal)
-            .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
-    };
-    connection
-        .send(&response.with_id(value.require_id()?))
-        .await
-}
-
 pub async fn user(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
@@ -40,14 +25,59 @@ pub async fn iota(
     connection: Arc<OmikronConnection>,
     value: CommunicationValue,
 ) -> OmikronResult<()> {
-    value.require_id()?;
-    value.require_sender_i64()?;
-    delete(
-        connection,
-        value.clone(),
-        iota_repo::delete_iota(IotaId::from(value.require_sender_i64()?)),
-    )
-    .await
+    let request_id = value.require_id()?;
+    let iota_id = value.require_sender_i64()?;
+    let omikron_ids = connection
+        .state()
+        .presence
+        .iota_connections(iota_id)
+        .unwrap_or_default();
+    match iota_repo::delete_iota(IotaId::from(iota_id)).await {
+        Ok(()) => {
+            for omikron_id in &omikron_ids {
+                connection
+                    .state()
+                    .presence
+                    .untrack_iota_connection(iota_id, *omikron_id);
+            }
+            let response_result = connection
+                .clone()
+                .send(&CommunicationValue::new(CommunicationType::Success).with_id(request_id))
+                .await;
+            let invalidation = CommunicationValue::new(CommunicationType::DeleteIota)
+                .without_id()
+                .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
+            for omikron_id in omikron_ids {
+                if let Some(target) = connection.state().connected_omikron(omikron_id) {
+                    let _ = target.send_message(&invalidation).await;
+                }
+            }
+            response_result
+        }
+        Err(crate::error::OmegaError::Validation(error)) => {
+            connection
+                .send(
+                    &CommunicationValue::new(CommunicationType::ErrorInvalidData)
+                        .with_id(request_id)
+                        .add_typed_default(DataType::ErrorType, DataValue::Str(error)),
+                )
+                .await
+        }
+        Err(crate::error::OmegaError::NotFound) => {
+            connection
+                .send_error_response(request_id, CommunicationType::ErrorNotFound)
+                .await
+        }
+        Err(error) => {
+            connection
+                .send(
+                    &CommunicationValue::new(CommunicationType::ErrorInternal)
+                        .with_id(request_id)
+                        .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
+                )
+                .await
+        }
+    }
 }
 
 pub async fn release_from_iota(
@@ -84,7 +114,11 @@ pub async fn release_from_iota(
     match user_repo::change_iota_id(user.id, None).await {
         Ok(()) => {
             if let Some(iota) = previous_iota {
-                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
+                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                    &connection.state(),
+                    iota.0,
+                )
+                .await;
             }
             connection
                 .send(
@@ -225,9 +259,17 @@ pub async fn attach_complete(
     match user_repo::change_iota_id(user.id, Some(IotaId::from(requester))).await {
         Ok(()) => {
             if let Some(iota) = previous_iota.filter(|id| id.0 != requester) {
-                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(iota.0).await;
+                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                    &connection.state(),
+                    iota.0,
+                )
+                .await;
             }
-            let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(requester).await;
+            let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                &connection.state(),
+                requester,
+            )
+            .await;
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::Success)
@@ -251,12 +293,28 @@ async fn complete_delete(
     match user_repo::delete_user_with_pending_erasure(user_id).await {
         Ok(iota_id) => {
             let cleanup_pending = iota_id.is_some();
+            let target_omikrons = connection
+                .state()
+                .presence
+                .routes_for_user(user_id.0)
+                .into_iter()
+                .map(|route| route.omikron_id)
+                .collect::<std::collections::HashSet<_>>();
+            connection.state().presence.remove_user_sessions(user_id.0);
             if let Some(iota_id) = iota_id {
-                let _ =
-                    crate::transport::omikron_manager::publish_iota_user_snapshot(iota_id.0).await;
-                crate::transport::omikron_manager::deliver_pending_erasures(iota_id.0).await;
+                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                    &connection.state(),
+                    iota_id.0,
+                )
+                .await;
+                crate::transport::omikron_manager::deliver_pending_erasures(
+                    &connection.state(),
+                    iota_id.0,
+                )
+                .await;
             }
-            connection
+            let response_result = connection
+                .clone()
                 .send(
                     &CommunicationValue::new(CommunicationType::Success)
                         .with_id(value.require_id()?)
@@ -265,7 +323,16 @@ async fn complete_delete(
                             DataValue::Bool(cleanup_pending),
                         ),
                 )
-                .await
+                .await;
+            let invalidation = CommunicationValue::new(CommunicationType::DeleteUser)
+                .without_id()
+                .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.0.into()));
+            for omikron_id in target_omikrons {
+                if let Some(target) = connection.state().connected_omikron(omikron_id) {
+                    let _ = target.send_message(&invalidation).await;
+                }
+            }
+            response_result
         }
         Err(crate::error::OmegaError::NotFound) => {
             connection

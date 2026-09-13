@@ -1,5 +1,5 @@
 use super::omikron_manager;
-use crate::{log_err, util::logger::PrintType};
+use crate::{log_err, state::OmegaState, util::logger::PrintType};
 use mtp::codec::{CommunicationType, CommunicationValue, RelayError, forward_relay_frame};
 use std::{
     convert::TryFrom,
@@ -80,6 +80,7 @@ pub fn error_response_type(error: &RelayRouteError) -> CommunicationType {
 }
 
 pub async fn route_from_omikron(
+    state: &OmegaState,
     source_omikron_id: i64,
     frame: CommunicationValue,
 ) -> Result<CommunicationValue, RelayRouteError> {
@@ -109,7 +110,7 @@ pub async fn route_from_omikron(
     let frame = forward_relay_frame(&frame, destination_wire_id)?;
 
     let Some(destination_omikron) =
-        omikron_manager::get_iota_primary_omikron_connection(destination_iota_i64)
+        omikron_manager::get_iota_primary_omikron_connection(state, destination_iota_i64)
     else {
         log_err!(
             source_omikron_id,
@@ -129,7 +130,7 @@ pub async fn route_from_omikron(
         );
         return Err(RelayRouteError::RouteLoop);
     }
-    let Some(connection) = omikron_manager::get_connected_omikron(destination_omikron) else {
+    let Some(connection) = state.connected_omikron(destination_omikron) else {
         log_err!(
             source_omikron_id,
             PrintType::Omega,
@@ -202,14 +203,14 @@ mod tests {
     #[tokio::test]
     async fn outer_sender_is_rejected_before_route_lookup() {
         let frame = relay_frame().with_sender(9);
-        let result = route_from_omikron(1, frame).await;
+        let result = route_from_omikron(&crate::state::OmegaState::test_state(), 1, frame).await;
         assert!(matches!(result, Err(RelayRouteError::OuterSenderPresent)));
     }
 
     #[tokio::test]
     async fn missing_destination_is_rejected_before_route_lookup() {
         let frame = relay_frame().without_receiver();
-        let result = route_from_omikron(1, frame).await;
+        let result = route_from_omikron(&crate::state::OmegaState::test_state(), 1, frame).await;
         assert!(matches!(
             result,
             Err(RelayRouteError::MissingDestinationIota)
@@ -219,7 +220,7 @@ mod tests {
     #[tokio::test]
     async fn user_route_target_is_rejected_by_opaque_omega_router() {
         let frame = relay_frame().with_receiver(wire(RouteTarget::User(42)));
-        let result = route_from_omikron(1, frame).await;
+        let result = route_from_omikron(&crate::state::OmegaState::test_state(), 1, frame).await;
         assert!(matches!(
             result,
             Err(RelayRouteError::InvalidDestinationTarget(_))
@@ -228,7 +229,8 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_destination_is_reported_as_iota_offline() {
-        let result = route_from_omikron(1, relay_frame()).await;
+        let result =
+            route_from_omikron(&crate::state::OmegaState::test_state(), 1, relay_frame()).await;
         assert!(matches!(result, Err(RelayRouteError::IotaOffline)));
     }
 }

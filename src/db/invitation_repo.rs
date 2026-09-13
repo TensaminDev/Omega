@@ -3,6 +3,10 @@ use crate::{
     error::{OmegaError, Result},
     models::{IotaId, UserId},
 };
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use mtp::crypto::{PublicKeyBundle, sha256};
 use rand::{Rng, RngExt};
@@ -91,8 +95,56 @@ fn revocation_applies(state: InvitationState) -> bool {
     )
 }
 
-fn invitation_password_valid(expected: Option<&[u8]>, actual: Option<&[u8]>) -> bool {
-    expected.is_none_or(|expected| actual.is_some_and(|actual| expected == actual))
+fn hash_invitation_password_blocking(password: &str) -> Result<String> {
+    Argon2::default()
+        .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
+        .map(|hash| hash.to_string())
+        .map_err(|error| OmegaError::Validation(error.to_string()))
+}
+
+fn invitation_password_valid_blocking(expected: Option<&[u8]>, supplied: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let Some(supplied) = supplied else {
+        return false;
+    };
+
+    if expected.len() == 32 {
+        return expected == sha256(supplied.as_bytes()).as_slice();
+    }
+
+    let Ok(expected) = str::from_utf8(expected) else {
+        return false;
+    };
+    let Ok(expected) = PasswordHash::new(expected) else {
+        return false;
+    };
+
+    Argon2::default()
+        .verify_password(supplied.as_bytes(), &expected)
+        .is_ok()
+}
+
+async fn hash_invitation_password(password: &str) -> Result<String> {
+    let password = password.to_owned();
+    tokio::task::spawn_blocking(move || hash_invitation_password_blocking(&password))
+        .await
+        .map_err(|error| {
+            OmegaError::Validation(format!("invitation password task failed: {error}"))
+        })?
+}
+
+async fn invitation_password_valid(
+    expected: Option<Vec<u8>>,
+    supplied: Option<&str>,
+) -> Result<bool> {
+    let supplied = supplied.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        invitation_password_valid_blocking(expected.as_deref(), supplied.as_deref())
+    })
+    .await
+    .map_err(|error| OmegaError::Validation(format!("invitation password task failed: {error}")))
 }
 
 pub async fn create(
@@ -108,6 +160,10 @@ pub async fn create(
     {
         return Err(OmegaError::Validation("invalid invitation options".into()));
     }
+    let password_hash = match password {
+        Some(password) => Some(hash_invitation_password(password).await?),
+        None => None,
+    };
 
     for _ in 0..ID_ALLOCATION_ATTEMPTS {
         let invitation_id = super::user_repo::generate_protocol_id().0;
@@ -115,7 +171,6 @@ pub async fn create(
         rand::rng().fill_bytes(&mut secret);
         let secret = URL_SAFE_NO_PAD.encode(secret);
         let token_hash = sha256(secret.as_bytes());
-        let password_hash = password.map(|value| sha256(value.as_bytes()));
 
         for _ in 0..SHORT_CODE_ATTEMPTS {
             let short_code = generate_short_code();
@@ -142,7 +197,7 @@ pub async fn create(
             .bind(invitation_id)
             .bind(token_hash.as_slice())
             .bind(short_code_hash.as_slice())
-            .bind(password_hash.as_ref().map(|hash| hash.as_slice()))
+            .bind(password_hash.as_deref().map(str::as_bytes))
             .bind(iota_id.0)
             .bind(label.map(str::as_bytes))
             .bind(lifetime_seconds)
@@ -316,8 +371,18 @@ pub async fn redeem(
     }
     let public_key = public_key.try_as_bytes()?;
     let credential_hash = credential_hash(credential, invitation_id, iota_id)?;
-    let password_hash = password.map(|value| sha256(value.as_bytes()));
     let database = pool().await?;
+    let expected_password = sqlx::query_scalar::<_, Option<Vec<u8>>>(
+        "SELECT password_hash FROM user_invitations WHERE invitation_id = ? AND iota_id = ?",
+    )
+    .bind(invitation_id)
+    .bind(iota_id.0)
+    .fetch_optional(&database)
+    .await?
+    .ok_or(OmegaError::NotFound)?;
+    if !invitation_password_valid(expected_password, password).await? {
+        return Err(OmegaError::Invitation("invitation_password_invalid"));
+    }
     let mut transaction = database.begin().await?;
     let row = sqlx::query(
         "SELECT state, revision, expires_at > UTC_TIMESTAMP() AS current, token_hash, \
@@ -334,13 +399,6 @@ pub async fn redeem(
     let short_hash: Option<Vec<u8>> = row.get("short_token_hash");
     if token_hash != credential_hash && short_hash.as_deref() != Some(credential_hash.as_slice()) {
         return Err(OmegaError::Invitation("invitation_invalid"));
-    }
-    let expected_password: Option<Vec<u8>> = row.get("password_hash");
-    if !invitation_password_valid(
-        expected_password.as_deref(),
-        password_hash.as_ref().map(|hash| hash.as_slice()),
-    ) {
-        return Err(OmegaError::Invitation("invitation_password_invalid"));
     }
     if matches!(
         state,
@@ -436,6 +494,7 @@ pub async fn redeem(
     .bind(&public_key)
     .execute(&mut *transaction)
     .await?;
+    super::user_repo::enqueue_iota_snapshot(&mut transaction, iota_id.0).await?;
     transaction.commit().await?;
     Ok(RedemptionResult {
         invitation_id,
@@ -514,6 +573,7 @@ pub async fn acknowledge(invitation_id: i64, user_id: UserId, iota_id: IotaId) -
     .bind(iota_id.0)
     .execute(&mut *transaction)
     .await?;
+    super::user_repo::enqueue_iota_snapshot(&mut transaction, iota_id.0).await?;
     transaction.commit().await?;
     Ok(true)
 }
@@ -609,7 +669,8 @@ fn normalize_short_code(value: &str) -> String {
 mod tests {
     use super::{
         InvitationState, SHORT_CODE_CHARS, SHORT_CODE_LEN, generate_short_code,
-        invitation_password_valid, normalize_short_code, parse_token, revocation_applies,
+        invitation_password_valid_blocking, normalize_short_code, parse_token, revocation_applies,
+        sha256,
     };
 
     #[test]
@@ -648,12 +709,17 @@ mod tests {
 
     #[test]
     fn optional_invitation_password_only_constrains_protected_invitations() {
-        let expected = [1_u8; 32];
-        let wrong = [2_u8; 32];
-        assert!(invitation_password_valid(None, None));
-        assert!(invitation_password_valid(None, Some(&wrong)));
-        assert!(!invitation_password_valid(Some(&expected), None));
-        assert!(!invitation_password_valid(Some(&expected), Some(&wrong)));
-        assert!(invitation_password_valid(Some(&expected), Some(&expected)));
+        let expected = sha256(b"correct");
+        assert!(invitation_password_valid_blocking(None, None));
+        assert!(invitation_password_valid_blocking(None, Some("wrong")));
+        assert!(!invitation_password_valid_blocking(Some(&expected), None));
+        assert!(!invitation_password_valid_blocking(
+            Some(&expected),
+            Some("wrong")
+        ));
+        assert!(invitation_password_valid_blocking(
+            Some(&expected),
+            Some("correct")
+        ));
     }
 }

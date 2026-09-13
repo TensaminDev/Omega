@@ -63,8 +63,7 @@ pub(crate) fn validate_dispatch_fields(value: &CommunicationValue) -> OmikronRes
 
     if !matches!(
         message_type,
-        mtp::codec::CommunicationType::ClientChanged
-            | mtp::codec::CommunicationType::PushNotification
+        mtp::codec::CommunicationType::PushNotification
     ) {
         value.require_id()?;
     }
@@ -82,13 +81,120 @@ pub(crate) fn validate_dispatch_fields(value: &CommunicationValue) -> OmikronRes
             | mtp::codec::CommunicationType::AcknowledgeIotaUserProvision
             | mtp::codec::CommunicationType::ReleaseUserFromIota
             | mtp::codec::CommunicationType::DeleteIota
+            | mtp::codec::CommunicationType::CreateUserInvitation
+            | mtp::codec::CommunicationType::ListUserInvitations
+            | mtp::codec::CommunicationType::RevokeUserInvitation
             | mtp::codec::CommunicationType::GetNotifications
             | mtp::codec::CommunicationType::ReadNotification
+            | mtp::codec::CommunicationType::ClientChanged
             | mtp::codec::CommunicationType::StateSubscribe
     ) {
         value.require_sender()?;
     }
 
+    Ok(())
+}
+
+pub(crate) fn require_user_sender(
+    connection: &OmikronConnection,
+    value: &CommunicationValue,
+) -> OmikronResult<i64> {
+    require_user_sender_route(&connection.state().presence, connection.id_i64(), value)
+}
+
+fn require_user_sender_route(
+    presence: &crate::sql::user_online_tracker::PresenceTracker,
+    omikron_id: i64,
+    value: &CommunicationValue,
+) -> OmikronResult<i64> {
+    let user_id = value.require_sender_i64()?;
+    if !presence.owns_user_route(user_id, omikron_id) {
+        return Err(crate::OmegaError::NotAuthenticated);
+    }
+    Ok(user_id)
+}
+
+pub(crate) fn require_iota_sender(
+    connection: &OmikronConnection,
+    value: &CommunicationValue,
+) -> OmikronResult<i64> {
+    require_iota_sender_route(&connection.state().presence, connection.id_i64(), value)
+}
+
+pub(crate) fn require_iota_data_route(
+    connection: &OmikronConnection,
+    iota_id: i64,
+) -> OmikronResult<()> {
+    require_iota_route(&connection.state().presence, connection.id_i64(), iota_id)
+}
+
+fn require_iota_route(
+    presence: &crate::sql::user_online_tracker::PresenceTracker,
+    omikron_id: i64,
+    iota_id: i64,
+) -> OmikronResult<()> {
+    if !presence.owns_iota_route(iota_id, omikron_id) {
+        return Err(crate::OmegaError::NotAuthenticated);
+    }
+    Ok(())
+}
+
+fn require_iota_sender_route(
+    presence: &crate::sql::user_online_tracker::PresenceTracker,
+    omikron_id: i64,
+    value: &CommunicationValue,
+) -> OmikronResult<i64> {
+    let iota_id = value.require_sender_i64()?;
+    if !presence.owns_iota_route(iota_id, omikron_id) {
+        return Err(crate::OmegaError::NotAuthenticated);
+    }
+    Ok(iota_id)
+}
+
+pub(crate) fn validate_dispatch_sender(
+    connection: &OmikronConnection,
+    value: &CommunicationValue,
+) -> OmikronResult<()> {
+    match value.get_comm_type_enum() {
+        Some(
+            mtp::codec::CommunicationType::ChangeUserData
+            | mtp::codec::CommunicationType::DeleteUser
+            | mtp::codec::CommunicationType::GetNotifications
+            | mtp::codec::CommunicationType::ReadNotification
+            | mtp::codec::CommunicationType::ClientChanged,
+        ) => {
+            require_user_sender(connection, value)?;
+        }
+        Some(
+            mtp::codec::CommunicationType::DeleteIota
+            | mtp::codec::CommunicationType::AttachUserBegin
+            | mtp::codec::CommunicationType::AttachUserComplete
+            | mtp::codec::CommunicationType::DeleteUserCredentialBegin
+            | mtp::codec::CommunicationType::DeleteUserCredentialComplete
+            | mtp::codec::CommunicationType::ReleaseUserFromIota
+            | mtp::codec::CommunicationType::CreateUserInvitation
+            | mtp::codec::CommunicationType::ListUserInvitations
+            | mtp::codec::CommunicationType::RevokeUserInvitation
+            | mtp::codec::CommunicationType::EraseHostedUserDataAck
+            | mtp::codec::CommunicationType::AcknowledgeIotaUserProvision,
+        ) => {
+            require_iota_sender(connection, value)?;
+        }
+        Some(
+            mtp::codec::CommunicationType::GetRegister
+            | mtp::codec::CommunicationType::CompleteRegisterUser,
+        ) => {
+            if let Some(iota_id) = value
+                .get_data(mtp::codec::DataType::IotaId)
+                .as_number()
+                .and_then(|id| i64::try_from(id).ok())
+                .filter(|id| *id > 0)
+            {
+                require_iota_data_route(connection, iota_id)?;
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -119,7 +225,11 @@ impl OptionalDataValueCompat for Option<&DataValue> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RequiredMtpFields, validate_dispatch_fields};
+    use super::{
+        RequiredMtpFields, require_iota_route, require_iota_sender_route,
+        require_user_sender_route, validate_dispatch_fields,
+    };
+    use crate::sql::user_online_tracker::PresenceTracker;
     use mtp::codec::{CommunicationType, CommunicationValue};
 
     #[test]
@@ -153,10 +263,15 @@ mod tests {
             CommunicationType::DeleteUserCredentialBegin,
             CommunicationType::DeleteUserCredentialComplete,
             CommunicationType::EraseHostedUserDataAck,
+            CommunicationType::AcknowledgeIotaUserProvision,
             CommunicationType::ReleaseUserFromIota,
             CommunicationType::DeleteIota,
+            CommunicationType::CreateUserInvitation,
+            CommunicationType::ListUserInvitations,
+            CommunicationType::RevokeUserInvitation,
             CommunicationType::GetNotifications,
             CommunicationType::ReadNotification,
+            CommunicationType::ClientChanged,
             CommunicationType::StateSubscribe,
         ] {
             let value = CommunicationValue::new(message_type).with_id(1);
@@ -166,14 +281,41 @@ mod tests {
     }
 
     #[test]
-    fn optional_client_changed_id_remains_optional() {
+    fn client_changed_requires_request_identity() {
         let value = CommunicationValue::new(CommunicationType::ClientChanged).without_id();
-        assert!(validate_dispatch_fields(&value).is_ok());
+        assert!(validate_dispatch_fields(&value).is_err());
     }
 
     #[test]
     fn push_notification_uses_its_logical_sender_field() {
         let value = CommunicationValue::new(CommunicationType::PushNotification);
         assert!(validate_dispatch_fields(&value).is_ok());
+    }
+
+    #[test]
+    fn mutating_sender_cannot_use_another_omikrons_route() {
+        let presence = PresenceTracker::default();
+        presence.connect_iota(11, 42);
+        presence.track_session(7, 3, 42, 11);
+        let user_mutation = CommunicationValue::new(CommunicationType::ChangeUserData)
+            .with_id(1)
+            .with_sender(7);
+        let iota_mutation = CommunicationValue::new(CommunicationType::DeleteIota)
+            .with_id(2)
+            .with_sender(11);
+
+        assert!(require_user_sender_route(&presence, 42, &user_mutation).is_ok());
+        assert!(require_user_sender_route(&presence, 43, &user_mutation).is_err());
+        assert!(require_iota_sender_route(&presence, 42, &iota_mutation).is_ok());
+        assert!(require_iota_sender_route(&presence, 43, &iota_mutation).is_err());
+    }
+
+    #[test]
+    fn typed_registration_iota_must_belong_to_source_omikron() {
+        let presence = PresenceTracker::default();
+        presence.connect_iota(11, 42);
+
+        assert!(require_iota_route(&presence, 42, 11).is_ok());
+        assert!(require_iota_route(&presence, 43, 11).is_err());
     }
 }

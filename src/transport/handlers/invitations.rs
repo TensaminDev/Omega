@@ -28,7 +28,9 @@ pub async fn manage(
     let result = match value.get_comm_type_enum() {
         Some(CommunicationType::CreateUserInvitation) => create(&value, iota_id).await,
         Some(CommunicationType::ListUserInvitations) => list(iota_id).await,
-        Some(CommunicationType::RevokeUserInvitation) => revoke(&value, iota_id).await,
+        Some(CommunicationType::RevokeUserInvitation) => {
+            revoke(&value, iota_id, &connection.state()).await
+        }
         _ => Err(OmegaError::Validation(
             "unknown invitation operation".into(),
         )),
@@ -108,6 +110,7 @@ pub async fn redeem(
         Ok(result) => {
             if result.state == invitation_repo::InvitationState::Provisioning {
                 crate::transport::omikron_manager::deliver_pending_user_provisioning(
+                    &connection.state(),
                     result.iota_id.0,
                 )
                 .await;
@@ -263,11 +266,12 @@ async fn list(iota_id: IotaId) -> crate::error::Result<CommunicationValue> {
 async fn revoke(
     value: &CommunicationValue,
     iota_id: IotaId,
+    state: &crate::state::OmegaState,
 ) -> crate::error::Result<CommunicationValue> {
     let invitation_id = signed_i64(value, DataType::InvitationId)
         .ok_or_else(|| OmegaError::Validation("missing invitation ID".into()))?;
     let result = invitation_repo::revoke(invitation_id, iota_id).await?;
-    crate::transport::omikron_manager::deliver_pending_erasures(iota_id.0).await;
+    crate::transport::omikron_manager::deliver_pending_erasures(state, iota_id.0).await;
     Ok(CommunicationValue::new(CommunicationType::Success)
         .add_typed_default(
             DataType::InvitationId,

@@ -1,9 +1,12 @@
 use super::capabilities::{OmegaCapabilities, PeerCapabilities};
 use crate::models::OmikronId;
 use crate::{
+    config::TransportConfig,
     log, log_cv_in, log_cv_out, log_err, log_in, server,
     state::OmegaState,
-    transport::connection::{RequiredMtpFields, validate_dispatch_fields},
+    transport::connection::{
+        RequiredMtpFields, validate_dispatch_fields, validate_dispatch_sender,
+    },
     transport::omikron_manager,
     util::{file_util::load_file_vec, logger::PrintType},
 };
@@ -319,6 +322,19 @@ impl OmikronConnection {
 
         if !value.is_type(CommunicationType::Relay) {
             validate_dispatch_fields(&value)?;
+            match validate_dispatch_sender(&self, &value) {
+                Ok(()) => {}
+                Err(crate::OmegaError::NotAuthenticated) => {
+                    return self
+                        .clone()
+                        .send_error_response(
+                            value.require_id()?,
+                            CommunicationType::ErrorNotAuthenticated,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error),
+            }
         }
 
         let dispatch_class = Self::dispatch_class(&value);
@@ -392,7 +408,8 @@ impl OmikronConnection {
         if value.is_type(CommunicationType::Relay) {
             let value = crate::transport::relay_router::ensure_relay_frame_id(value);
             let request_id = value.id();
-            let result = crate::transport::relay_router::route_from_omikron(id, value).await;
+            let result =
+                crate::transport::relay_router::route_from_omikron(&state, id, value).await;
             let response = match &result {
                 Ok(response) => request_id.map(|request_id| response.clone().with_id(request_id)),
                 Err(error) => {
@@ -659,7 +676,10 @@ impl OmikronConnection {
         }
     }
     pub async fn get_omikron_id(self: Arc<Self>) -> Option<i64> {
-        Some(self.id as i64)
+        Some(self.id_i64())
+    }
+    pub fn id_i64(&self) -> i64 {
+        self.id as i64
     }
     pub fn state(&self) -> Arc<OmegaState> {
         self.state.clone()
@@ -684,6 +704,35 @@ pub async fn complete_register(_: PublicKeyBundle, _: Option<String>) -> u64 {
     0
 }
 
+fn omega_transport_policy(config: &TransportConfig) -> Policy {
+    Policy {
+        send_mode: SendMode::SingleStreamPerMessage,
+        max_message_size: config.max_message_size,
+        handshake_max_message_size: config.handshake_max_message_size,
+        close_frame_len: u32::MAX,
+        application_close_code: 0,
+        open_stream_timeout: Duration::from_millis(5_000),
+        write_timeout: Duration::from_millis(5_000),
+        accept_stream_timeout: Duration::from_millis(10_000),
+        read_timeout: Duration::from_millis(30_000),
+        keep_alive_interval: Some(Duration::from_secs(6)),
+        max_idle_timeout: Some(Duration::from_secs(30)),
+        force_close_delay: Duration::from_millis(300),
+        receiver_queue_capacity: 1000,
+        max_concurrent_stream_tasks: 64,
+        persistent_stream_max_retries: 5,
+        persistent_stream_retry_backoff: Duration::from_secs(5),
+        max_frames_per_stream: None,
+        parallel_multi_stream_sends: true,
+        pipe_decision_timeout: Duration::from_secs(20),
+        pipe_stream_open_timeout: Duration::from_millis(500),
+        request_tombstone_ttl: Duration::from_secs(30),
+        request_tombstone_capacity: 200,
+        pipe_tombstone_ttl: Duration::from_secs(30),
+        pipe_tombstone_capacity: 200,
+    }
+}
+
 pub async fn start(
     port: u16,
     state: Arc<OmegaState>,
@@ -691,37 +740,12 @@ pub async fn start(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cert_pem = load_file_vec("certs", "cert.pem")?;
     let key_pem = load_file_vec("certs", "key.pem")?;
-    let web_config = server::web::build_web_config(state.identity.clone())?
+    let web_config = server::web::build_web_config(state.clone())?
         .serve_tcp_https(true)
         .max_tcp_connections(256);
     let ip = parse_bind_address(std::env::var("BIND_ADDRESS").ok().as_deref())?;
     let host_config = HostConfig::new(ip, port, cert_pem, key_pem)
-        .with_policy(Policy {
-            send_mode: SendMode::SingleStreamPerMessage,
-            max_message_size: 1_000_000_000,
-            handshake_max_message_size: 1_000_000,
-            close_frame_len: u32::MAX,
-            application_close_code: 0,
-            open_stream_timeout: Duration::from_millis(5_000),
-            write_timeout: Duration::from_millis(5_000),
-            accept_stream_timeout: Duration::from_millis(10_000),
-            read_timeout: Duration::from_millis(30_000),
-            keep_alive_interval: Some(Duration::from_secs(6)),
-            max_idle_timeout: Some(Duration::from_secs(30)),
-            force_close_delay: Duration::from_millis(300),
-            receiver_queue_capacity: 1000,
-            max_concurrent_stream_tasks: 64,
-            persistent_stream_max_retries: 5,
-            persistent_stream_retry_backoff: Duration::from_secs(5),
-            max_frames_per_stream: None,
-            parallel_multi_stream_sends: true,
-            pipe_decision_timeout: Duration::from_secs(20),
-            pipe_stream_open_timeout: Duration::from_millis(500),
-            request_tombstone_ttl: Duration::from_secs(30),
-            request_tombstone_capacity: 200,
-            pipe_tombstone_ttl: Duration::from_secs(30),
-            pipe_tombstone_capacity: 200,
-        })
+        .with_policy(omega_transport_policy(&state.config.transport))
         .with_authentication(
             state.identity.clone_keyring()?,
             Box::new(|id, description| Box::pin(get_by_omikron_id(id, description))),
@@ -770,7 +794,7 @@ pub async fn start(
         }
         let authenticated = matches!(&conn.auth_state, AuthState::Authenticated);
         let Some(connection) = OmikronConnection::new(
-            conn.sender,
+            conn.sender.clone(),
             conn.client_id,
             conn.description.as_deref(),
             state.clone(),
@@ -796,7 +820,8 @@ pub async fn start(
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchClass, OmikronConnection, parse_bind_address};
+    use super::{DispatchClass, OmikronConnection, omega_transport_policy, parse_bind_address};
+    use crate::config::TransportConfig;
     use mtp::codec::{CommunicationType, CommunicationValue};
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -807,6 +832,17 @@ mod tests {
             OmikronConnection::dispatch_class(&value),
             DispatchClass::Concurrent
         );
+    }
+
+    #[test]
+    fn omega_transport_policy_uses_configured_message_limits() {
+        let policy = omega_transport_policy(&TransportConfig {
+            max_message_size: 123,
+            handshake_max_message_size: 45,
+        });
+
+        assert_eq!(policy.max_message_size, 123);
+        assert_eq!(policy.handshake_max_message_size, 45);
     }
 
     #[test]

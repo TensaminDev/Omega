@@ -16,10 +16,18 @@ pub struct DispatchConfig {
     pub global_handler_concurrency: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
+pub struct TransportConfig {
+    pub max_message_size: u64,
+    pub handshake_max_message_size: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct OmegaConfig {
     pub rate_limits: RateLimitConfig,
     pub dispatch: DispatchConfig,
+    pub transport: TransportConfig,
+    pub logger_queue_capacity: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -87,23 +95,50 @@ impl Default for DispatchConfig {
     }
 }
 
+impl Default for OmegaConfig {
+    fn default() -> Self {
+        Self {
+            rate_limits: RateLimitConfig::default(),
+            dispatch: DispatchConfig::default(),
+            transport: TransportConfig {
+                max_message_size: 16 * 1024 * 1024,
+                handshake_max_message_size: 64 * 1024,
+            },
+            logger_queue_capacity: 1024,
+        }
+    }
+}
+
 impl OmegaConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let rate_limits = RateLimitConfig::from_env()?;
+        let defaults = Self::default();
         PublicUrlConfig::from_env()?;
-        let defaults = DispatchConfig::default();
         Ok(Self {
-            rate_limits,
+            rate_limits: RateLimitConfig::from_env()?,
             dispatch: DispatchConfig {
                 omikron_handler_concurrency: env_usize(
                     "OMEGA_OMIKRON_HANDLER_CONCURRENCY",
-                    defaults.omikron_handler_concurrency,
+                    defaults.dispatch.omikron_handler_concurrency,
                 )?,
                 global_handler_concurrency: env_usize(
                     "OMEGA_GLOBAL_HANDLER_CONCURRENCY",
-                    defaults.global_handler_concurrency,
+                    defaults.dispatch.global_handler_concurrency,
                 )?,
             },
+            transport: TransportConfig {
+                max_message_size: env_u64(
+                    "OMEGA_TRANSPORT_MAX_MESSAGE_SIZE",
+                    defaults.transport.max_message_size,
+                )?,
+                handshake_max_message_size: env_u64(
+                    "OMEGA_TRANSPORT_HANDSHAKE_MAX_MESSAGE_SIZE",
+                    defaults.transport.handshake_max_message_size,
+                )?,
+            },
+            logger_queue_capacity: env_usize(
+                "LOGGER_QUEUE_CAPACITY",
+                defaults.logger_queue_capacity,
+            )?,
         })
     }
 }
@@ -149,6 +184,25 @@ fn env_usize(name: &str, fallback: usize) -> Result<usize, ConfigError> {
     }
 }
 
+fn env_u64(name: &str, fallback: u64) -> Result<u64, ConfigError> {
+    match env::var(name) {
+        Ok(value) => parse_positive_u64(name, value),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidUnicode { name: name.into() }),
+    }
+}
+
+fn parse_positive_u64(name: &str, value: String) -> Result<u64, ConfigError> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| ConfigError::InvalidValue {
+            name: name.into(),
+            value,
+        })
+}
+
 fn env_duration(name: &str, fallback: Duration) -> Result<Duration, ConfigError> {
     env_usize(name, fallback.as_secs() as usize).map(|value| Duration::from_secs(value as u64))
 }
@@ -179,7 +233,7 @@ fn env_public_base_url(name: &str, fallback: &str) -> Result<String, ConfigError
 
 #[cfg(test)]
 mod tests {
-    use super::env_public_base_url;
+    use super::{env_public_base_url, parse_positive_u64};
 
     #[test]
     fn validates_public_base_urls() {
@@ -189,5 +243,10 @@ mod tests {
         );
         assert!(env_public_base_url("UNSET_TEST_URL", "example.com").is_err());
         assert!(env_public_base_url("UNSET_TEST_URL", "https://example.com/path").is_err());
+    }
+
+    #[test]
+    fn rejects_zero_transport_limit() {
+        assert!(parse_positive_u64("OMEGA_TRANSPORT_MAX_MESSAGE_SIZE", "0".into()).is_err());
     }
 }

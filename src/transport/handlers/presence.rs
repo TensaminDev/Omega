@@ -2,7 +2,12 @@ use super::super::connection::{
     OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
 use crate::{
-    db::user_repo, log_in, models::IotaId, sql::connection_status::UserStatus, state::OmegaState,
+    db::{iota_repo, user_repo},
+    error::OmegaError,
+    log_in,
+    models::IotaId,
+    sql::connection_status::UserStatus,
+    state::OmegaState,
 };
 use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 use std::{
@@ -63,6 +68,74 @@ fn states_for_users(state: &OmegaState, users: &[crate::models::User]) -> HashMa
         .collect()
 }
 
+fn states_before_route_removal(
+    state: &OmegaState,
+    users: &[crate::models::User],
+    removed_iota_ids: &HashSet<i64>,
+    removed_session_user_ids: &HashSet<i64>,
+) -> HashMap<i64, UserStatus> {
+    users
+        .iter()
+        .map(|user| {
+            let current = user
+                .iota_id
+                .map(|iota_id| state.presence.resolve_public_state(user.id.0, iota_id.0))
+                .unwrap_or(UserStatus::user_offline);
+            let previous = if removed_session_user_ids.contains(&user.id.0) {
+                state.presence.preference(user.id.0).public_value()
+            } else if user
+                .iota_id
+                .is_some_and(|iota_id| removed_iota_ids.contains(&iota_id.0))
+                && current == UserStatus::iota_offline
+            {
+                UserStatus::user_offline
+            } else {
+                current
+            };
+            (user.id.0, previous)
+        })
+        .collect()
+}
+
+async fn publish_route_removal(
+    state: &OmegaState,
+    user_ids: &[i64],
+    iota_ids: &[i64],
+    removed_session_user_ids: &HashSet<i64>,
+    context: &str,
+) {
+    let users = match user_repo::get_users_by_ids_and_iota_ids(user_ids, iota_ids).await {
+        Ok(users) => users,
+        Err(error) => {
+            log_in!(
+                crate::util::logger::PrintType::General,
+                "Failed to load users after {} route cleanup: {}",
+                context,
+                error
+            );
+            return;
+        }
+    };
+    let user_ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();
+    let preferences = match user_repo::get_presence_preferences(&user_ids).await {
+        Ok(preferences) => preferences,
+        Err(error) => {
+            log_in!(
+                crate::util::logger::PrintType::General,
+                "Failed to load preferences after {} route cleanup: {}",
+                context,
+                error
+            );
+            return;
+        }
+    };
+    apply_preferences(state, preferences);
+    let removed_iota_ids = iota_ids.iter().copied().collect::<HashSet<_>>();
+    let before =
+        states_before_route_removal(state, &users, &removed_iota_ids, removed_session_user_ids);
+    publish_changed_states(state, &before, &users).await;
+}
+
 fn changed_states(
     state: &OmegaState,
     before: &HashMap<i64, UserStatus>,
@@ -110,7 +183,8 @@ async fn publish_state_changes(state: &OmegaState, changes: &[(i64, UserStatus)]
     }
     for (omikron_id, notifications) in grouped {
         if let Err(error) =
-            crate::transport::omikron_manager::send_state_batch(omikron_id, notifications).await
+            crate::transport::omikron_manager::send_state_batch(state, omikron_id, notifications)
+                .await
         {
             log_in!(
                 crate::util::logger::PrintType::General,
@@ -128,6 +202,17 @@ async fn publish_changed_states(
     users: &[crate::models::User],
 ) {
     publish_state_changes(state, &changed_states(state, before, users)).await;
+}
+
+pub(crate) async fn apply_committed_preference(
+    state: &OmegaState,
+    user: &crate::models::User,
+    preference: UserStatus,
+) {
+    let users = std::slice::from_ref(user);
+    let before = states_for_users(state, users);
+    state.presence.set_preference(user.id.0, preference);
+    publish_changed_states(state, &before, users).await;
 }
 
 pub async fn state_subscribe(
@@ -166,31 +251,36 @@ pub async fn state_subscribe(
         .await
 }
 
-/// Legacy state-change contract used by Omegas that predate SetUserState.
-/// The payload is ClientChanged with UserId and UserState only.
 pub async fn client_changed_legacy(
     state: Arc<OmegaState>,
-    _: Arc<OmikronConnection>,
+    connection: Arc<OmikronConnection>,
     value: CommunicationValue,
     _: i64,
 ) -> OmikronResult<()> {
-    let Some(user_id) = value
-        .get_data(DataType::UserId)
-        .as_number()
-        .and_then(|id| i64::try_from(id).ok())
-        .filter(|id| *id > 0)
-    else {
-        return Ok(());
-    };
+    let request_id = value.require_id()?;
+    let user_id = value.require_sender_i64()?;
     let Some(status) = value
         .get_data(DataType::UserState)
         .as_str()
         .and_then(UserStatus::from_client_preference)
     else {
-        return Ok(());
+        return connection
+            .send_error_response(request_id, CommunicationType::ErrorInvalidData)
+            .await;
     };
-    state.presence.set_preference(user_id, status);
-    Ok(())
+    let user = user_repo::get_by_user_id(user_id.into()).await?;
+    user_repo::update_user_patch(
+        user.id,
+        &user_repo::UserPatch {
+            presence_preference: Some(status.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    apply_committed_preference(&state, &user, status).await;
+    connection
+        .send(&CommunicationValue::new(CommunicationType::Success).with_id(request_id))
+        .await
 }
 
 pub async fn user_connected(
@@ -243,7 +333,9 @@ pub async fn user_connected(
         Ok(preferences) => preferences,
         Err(error) => return Err(error),
     };
-    if user.iota_id.map(|id| id.0) != Some(iota_id) || !state.presence.has_iota_route(iota_id) {
+    if user.iota_id.map(|id| id.0) != Some(iota_id)
+        || !state.presence.owns_iota_route(iota_id, omikron_id)
+    {
         return connection
             .send_error_response(value.require_id()?, CommunicationType::ErrorNoIota)
             .await;
@@ -323,25 +415,33 @@ pub async fn iota_connected(
             .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
-    let users = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await?;
+    let iota_id = IotaId::from(iota_id);
+    match iota_repo::get_iota_by_id(iota_id).await {
+        Ok(_) => {}
+        Err(OmegaError::NotFound) => {
+            return connection
+                .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
+                .await;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    let users = user_repo::get_users_by_iota_id(iota_id).await?;
     let ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();
     apply_preferences(&state, user_repo::get_presence_preferences(&ids).await?);
     let before = states_for_users(&state, &users);
-    state.presence.connect_iota(iota_id, omikron_id);
+    state.presence.connect_iota(iota_id.0, omikron_id);
     let user_ids = users
         .iter()
         .map(|user| DataValue::SignedNumber(user.id.0.into()))
         .collect();
-    let response = CommunicationValue::new(CommunicationType::IotaUserData)
-        .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()))
+    let response = CommunicationValue::new(CommunicationType::Success)
+        .with_id(value.require_id()?)
+        .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.0.into()))
         .add_typed_default(DataType::UserIds, DataValue::Array(user_ids));
-    connection.clone().send(&response).await?;
-    crate::transport::omikron_manager::deliver_pending_erasures(iota_id).await;
-    crate::transport::omikron_manager::deliver_pending_user_provisioning(iota_id).await;
+    crate::transport::omikron_manager::deliver_pending_erasures(&state, iota_id.0).await;
+    crate::transport::omikron_manager::deliver_pending_user_provisioning(&state, iota_id.0).await;
     publish_changed_states(&state, &before, &users).await;
-    connection
-        .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
-        .await
+    connection.send(&response).await
 }
 
 pub async fn iota_disconnected(
@@ -361,12 +461,21 @@ pub async fn iota_disconnected(
             .send_error_response(value.require_id()?, CommunicationType::ErrorInvalidData)
             .await;
     };
-    let users = user_repo::get_users_by_iota_id(IotaId::from(iota_id)).await?;
-    let ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();
-    apply_preferences(&state, user_repo::get_presence_preferences(&ids).await?);
-    let before = states_for_users(&state, &users);
+    let removed_session_user_ids = state
+        .presence
+        .sessions_owned_by(omikron_id)
+        .into_iter()
+        .filter_map(|(user_id, _, route)| (route.iota_id == iota_id).then_some(user_id))
+        .collect::<HashSet<_>>();
     state.presence.untrack_iota_connection(iota_id, omikron_id);
-    publish_changed_states(&state, &before, &users).await;
+    publish_route_removal(
+        &state,
+        &removed_session_user_ids.iter().copied().collect::<Vec<_>>(),
+        &[iota_id],
+        &removed_session_user_ids,
+        "Iota disconnect",
+    )
+    .await;
     connection
         .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
@@ -440,7 +549,8 @@ pub async fn sync_status(
             }
         }
 
-        let previous_iota_ids = state.presence.iota_ids_owned_by(omikron_id);
+        let removed = state.presence.remove_omikron(omikron_id);
+        let previous_iota_ids = removed.iota_ids;
         let affected_iota_ids = previous_iota_ids
             .iter()
             .chain(iota_ids.iter())
@@ -448,19 +558,36 @@ pub async fn sync_status(
             .collect::<HashSet<_>>();
         let users = user_repo::get_users_by_ids(&user_ids).await?;
         let returned_user_ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();
-        apply_preferences(
-            &state,
-            user_repo::get_presence_preferences(&returned_user_ids).await?,
-        );
-        let before = states_for_users(&state, &users);
-        state
-            .presence
-            .replace_omikron_snapshot(omikron_id, &iota_ids, &[]);
         let affected_users = user_repo::get_users_by_ids_and_iota_ids(
             &returned_user_ids,
             &affected_iota_ids.iter().copied().collect::<Vec<_>>(),
         )
         .await?;
+        apply_preferences(
+            &state,
+            user_repo::get_presence_preferences(
+                &affected_users
+                    .iter()
+                    .map(|user| user.id.0)
+                    .collect::<Vec<_>>(),
+            )
+            .await?,
+        );
+        let removed_iota_ids = previous_iota_ids.iter().copied().collect::<HashSet<_>>();
+        let removed_session_user_ids = removed
+            .session_user_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let before = states_before_route_removal(
+            &state,
+            &affected_users,
+            &removed_iota_ids,
+            &removed_session_user_ids,
+        );
+        state
+            .presence
+            .replace_omikron_snapshot(omikron_id, &iota_ids, &[]);
         publish_changed_states(&state, &before, &affected_users).await;
         return connection
             .send(&CommunicationValue::new(CommunicationType::Success).with_id(request_id))
@@ -538,12 +665,12 @@ pub async fn sync_status(
         sessions.push((user_id, session_id, iota_id));
     }
 
-    let previous_iota_ids = state.presence.iota_ids_owned_by(omikron_id);
-    let previous_session_user_ids = state
-        .presence
-        .sessions_owned_by(omikron_id)
-        .into_iter()
-        .map(|(user_id, _, _)| user_id)
+    let removed = state.presence.remove_omikron(omikron_id);
+    let previous_iota_ids = removed.iota_ids.clone();
+    let previous_session_user_ids = removed
+        .session_user_ids
+        .iter()
+        .copied()
         .collect::<HashSet<_>>();
     let new_session_user_ids = sessions
         .iter()
@@ -577,7 +704,12 @@ pub async fn sync_status(
         &state,
         user_repo::get_presence_preferences(&user_ids).await?,
     );
-    let before = states_for_users(&state, &users);
+    let before = states_before_route_removal(
+        &state,
+        &users,
+        &previous_iota_ids.iter().copied().collect(),
+        &previous_session_user_ids,
+    );
     state
         .presence
         .replace_omikron_snapshot(omikron_id, &iota_ids, &sessions);
@@ -588,47 +720,20 @@ pub async fn sync_status(
 }
 
 pub async fn omikron_disconnected(state: Arc<OmegaState>, omikron_id: i64) {
-    let iota_ids = state.presence.iota_ids_owned_by(omikron_id);
-    let session_user_ids = state
-        .presence
-        .sessions_owned_by(omikron_id)
-        .into_iter()
-        .map(|(user_id, _, _)| user_id)
-        .collect::<Vec<_>>();
-    let users = match user_repo::get_users_by_ids_and_iota_ids(&session_user_ids, &iota_ids).await {
-        Ok(users) => users,
-        Err(error) => {
-            log_in!(
-                crate::util::logger::PrintType::General,
-                "Failed to load users before Omikron {} cleanup: {}",
-                omikron_id,
-                error
-            );
-            return;
-        }
-    };
-    let user_ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();
-    if let Err(error) = user_repo::get_presence_preferences(&user_ids)
-        .await
-        .map(|preferences| apply_preferences(&state, preferences))
-    {
-        log_in!(
-            crate::util::logger::PrintType::General,
-            "Failed to load preferences before Omikron {} cleanup: {}",
-            omikron_id,
-            error
-        );
-        return;
-    }
-    let before = states_for_users(&state, &users);
     let removed = state.presence.remove_omikron(omikron_id);
-    debug_assert_eq!(removed.iota_ids, {
-        let mut ids = iota_ids.clone();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
-    });
-    publish_changed_states(&state, &before, &users).await;
+    let removed_session_user_ids = removed
+        .session_user_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    publish_route_removal(
+        &state,
+        &removed.session_user_ids,
+        &removed.iota_ids,
+        &removed_session_user_ids,
+        &format!("Omikron {omikron_id} disconnect"),
+    )
+    .await;
 }
 
 #[cfg(test)]
