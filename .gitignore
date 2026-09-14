@@ -31,3 +31,4 @@ target
 
 *.mk
 *.mpkb
+.direnv
