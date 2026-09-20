@@ -8,6 +8,14 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    iota = {
+      url = "git+https://git.methanium.net/tensamin/iota";
+      flake = false;
+    };
+    mtp-type-maps = {
+      url = "git+https://git.methanium.net/tensamin/mtp-type-maps";
+      flake = false;
+    };
   };
 
   outputs =
@@ -54,6 +62,13 @@
               pname = "omega";
               version = "0.1.0";
               src = ./.;
+              postPatch = ''
+                cp -R ${inputs.iota}/iota-identity ./iota-identity
+                substituteInPlace Cargo.toml \
+                  --replace-fail 'path = "../iota/iota-identity"' 'path = "./iota-identity"'
+                substituteInPlace iota-identity/Cargo.toml \
+                  --replace-fail 'bb0f682b735de5ebb36bb41dc699260578341828' '1f19a0d897c265d1e3f590a876f95e766ff99318'
+              '';
               cargoLock = {
                 lockFile = ./Cargo.lock;
                 allowBuiltinFetchGit = true;
@@ -67,6 +82,7 @@
                 openssl
                 libmysqlclient
               ];
+              MTP_TYPE_MAPS = "${inputs.mtp-type-maps}/type-maps.yaml";
               dontUseCmakeConfigure = true;
             };
           };
@@ -111,17 +127,17 @@
               };
 
               certFile = lib.mkOption {
-                type = lib.types.path;
-                description = "Path to the SSL certificate file (e.g. ACME fullchain.pem). Copied to cert.pem at runtime.";
+                type = lib.types.str;
+                description = "Runtime path to the TLS certificate.";
               };
 
               keyFile = lib.mkOption {
-                type = lib.types.path;
-                description = "Path to the SSL private key file (e.g. ACME key.pem). Converted to PKCS#8 and copied to key.pem at runtime.";
+                type = lib.types.str;
+                description = "Runtime path to the TLS private key.";
               };
 
               environmentFiles = lib.mkOption {
-                type = lib.types.listOf lib.types.path;
+                type = lib.types.listOf lib.types.str;
                 default = [ ];
                 description = ''
                   Environment files to load for the Omega service.
@@ -129,16 +145,22 @@
                 '';
               };
 
-              apiPort = lib.mkOption {
+              port = lib.mkOption {
                 type = lib.types.port;
-                default = 9188;
-                description = "Port for the web/API server.";
+                default = 443;
+                description = "TCP and UDP port for Omega's combined listener.";
               };
 
-              transportPort = lib.mkOption {
-                type = lib.types.port;
-                default = 9187;
-                description = "Port for the MTP/QUIC transport server.";
+              identityFile = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                description = "Runtime path to an existing Omega private keyring, or null to generate one.";
+              };
+
+              publicIdentityFile = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                description = "Runtime path to Omega's matching public key bundle.";
               };
 
               bindAddress = lib.mkOption {
@@ -176,6 +198,11 @@
                 wantedBy = [ "multi-user.target" ];
                 after = [ "network.target" ];
 
+                environment = {
+                  PORT = toString cfg.port;
+                  BIND_ADDRESS = cfg.bindAddress;
+                };
+
                 serviceConfig = {
                   Type = "simple";
                   User = "omega";
@@ -184,12 +211,6 @@
                   ExecStart = "${cfg.package}/bin/omega";
                   Restart = "always";
                   RestartSec = "5s";
-
-                  Environment = [
-                    "API_PORT=${toString cfg.apiPort}"
-                    "OMIKRON_PORT=${toString cfg.transportPort}"
-                    "BIND_ADDRESS=${cfg.bindAddress}"
-                  ];
 
                   EnvironmentFile = cfg.environmentFiles;
 
@@ -200,12 +221,19 @@
                     (
                       "+"
                       + pkgs.writeShellScript "omega-setup-certs" ''
-                        mkdir -p ${cfg.dataDir}/certs
-                        cp ${cfg.certFile} ${cfg.dataDir}/certs/cert.pem
+                        install -d -m 0700 -o omega -g omega ${cfg.dataDir}/certs
+                        install -m 0644 -o omega -g omega ${cfg.certFile} ${cfg.dataDir}/certs/cert.pem
                         ${pkgs.openssl}/bin/openssl pkcs8 -topk8 -nocrypt \
                           -in ${cfg.keyFile} \
                           -out ${cfg.dataDir}/certs/key.pem
-                        chown -R omega:omega ${cfg.dataDir}
+                        chown omega:omega ${cfg.dataDir}/certs/key.pem
+                        chmod 0600 ${cfg.dataDir}/certs/key.pem
+                        ${lib.optionalString (cfg.identityFile != null) ''
+                          install -m 0600 -o omega -g omega ${cfg.identityFile} ${cfg.dataDir}/omega.mk
+                        ''}
+                        ${lib.optionalString (cfg.publicIdentityFile != null) ''
+                          install -m 0644 -o omega -g omega ${cfg.publicIdentityFile} ${cfg.dataDir}/omega.mpkb
+                        ''}
                       ''
                     )
                   ];
@@ -226,14 +254,8 @@
               };
 
               networking.firewall = lib.mkIf cfg.openFirewall {
-                allowedTCPPorts = [
-                  cfg.transportPort
-                  cfg.apiPort
-                ];
-                allowedUDPPorts = [
-                  cfg.transportPort
-                  cfg.apiPort
-                ];
+                allowedTCPPorts = [ cfg.port ];
+                allowedUDPPorts = [ cfg.port ];
               };
             };
           };
