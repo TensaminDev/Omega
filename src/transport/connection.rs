@@ -1,6 +1,6 @@
 pub(crate) use super::omikron_connection::{OmikronConnection, OmikronResult};
 
-use mtp::codec::{CommunicationValue, DataValue};
+use mtp::codec::{CommunicationType, CommunicationValue, DataType, DataValue};
 
 pub(crate) trait RequiredMtpFields {
     /// Require a nonzero request correlation ID. `None` and `Some(0)` are
@@ -54,44 +54,66 @@ pub(crate) fn positive_i64(value: impl TryInto<i128>, field: &str) -> OmikronRes
     Ok(value)
 }
 
-pub(crate) fn validate_dispatch_fields(value: &CommunicationValue) -> OmikronResult<()> {
-    let Some(message_type) = value.get_comm_type_enum() else {
-        return Err(crate::OmegaError::Validation(
-            "MTP message has an unknown communication type".into(),
-        ));
-    };
+#[derive(Clone, Copy)]
+enum SenderPolicy {
+    None,
+    Present,
+    UserRoute,
+    IotaRoute,
+    IotaDataRoute,
+}
 
-    if !matches!(
-        message_type,
-        mtp::codec::CommunicationType::PushNotification
-    ) {
+fn operation_policy(message_type: CommunicationType) -> Option<(bool, SenderPolicy)> {
+    use CommunicationType::*;
+    use SenderPolicy as Sender;
+    Some(match message_type {
+        PushNotification => (false, Sender::None),
+        ChangeUserData | DeleteUser | GetNotifications | ReadNotification | ClientChanged
+        | StateSubscribe => (true, Sender::UserRoute),
+        DeleteIota
+        | AttachUserBegin
+        | AttachUserComplete
+        | DeleteUserCredentialBegin
+        | DeleteUserCredentialComplete
+        | ReleaseUserFromIota
+        | CreateUserInvitation
+        | ListUserInvitations
+        | RevokeUserInvitation
+        | EraseHostedUserDataAck
+        | AcknowledgeIotaUserProvision => (true, Sender::IotaRoute),
+        GetRegister | CompleteRegisterUser => (true, Sender::IotaDataRoute),
+        GetUserData => (true, Sender::Present),
+        ShortenLink
+        | GetIotaData
+        | GetStates
+        | CompleteRegisterIota
+        | RedeemUserInvitation
+        | GetUserInvitationStatus
+        | UserConnected
+        | UserDisconnected
+        | IotaConnected
+        | IotaDisconnected
+        | SyncClientIotaStatus => (true, Sender::None),
+        _ => return None,
+    })
+}
+
+pub(crate) fn validate_dispatch_fields(value: &CommunicationValue) -> OmikronResult<()> {
+    let message_type = value
+        .get_comm_type_enum()
+        .ok_or_else(|| crate::OmegaError::Validation("unknown communication type".into()))?;
+    let (requires_id, sender_policy) = operation_policy(message_type).ok_or_else(|| {
+        crate::OmegaError::Validation(format!("no authorization policy for {message_type:?}"))
+    })?;
+    if requires_id {
         value.require_id()?;
     }
-
     if matches!(
-        message_type,
-        mtp::codec::CommunicationType::GetUserData
-            | mtp::codec::CommunicationType::ChangeUserData
-            | mtp::codec::CommunicationType::DeleteUser
-            | mtp::codec::CommunicationType::AttachUserBegin
-            | mtp::codec::CommunicationType::AttachUserComplete
-            | mtp::codec::CommunicationType::DeleteUserCredentialBegin
-            | mtp::codec::CommunicationType::DeleteUserCredentialComplete
-            | mtp::codec::CommunicationType::EraseHostedUserDataAck
-            | mtp::codec::CommunicationType::AcknowledgeIotaUserProvision
-            | mtp::codec::CommunicationType::ReleaseUserFromIota
-            | mtp::codec::CommunicationType::DeleteIota
-            | mtp::codec::CommunicationType::CreateUserInvitation
-            | mtp::codec::CommunicationType::ListUserInvitations
-            | mtp::codec::CommunicationType::RevokeUserInvitation
-            | mtp::codec::CommunicationType::GetNotifications
-            | mtp::codec::CommunicationType::ReadNotification
-            | mtp::codec::CommunicationType::ClientChanged
-            | mtp::codec::CommunicationType::StateSubscribe
+        sender_policy,
+        SenderPolicy::Present | SenderPolicy::UserRoute | SenderPolicy::IotaRoute
     ) {
         value.require_sender()?;
     }
-
     Ok(())
 }
 
@@ -155,45 +177,29 @@ pub(crate) fn validate_dispatch_sender(
     connection: &OmikronConnection,
     value: &CommunicationValue,
 ) -> OmikronResult<()> {
-    match value.get_comm_type_enum() {
-        Some(
-            mtp::codec::CommunicationType::ChangeUserData
-            | mtp::codec::CommunicationType::DeleteUser
-            | mtp::codec::CommunicationType::GetNotifications
-            | mtp::codec::CommunicationType::ReadNotification
-            | mtp::codec::CommunicationType::ClientChanged,
-        ) => {
+    let message_type = value
+        .get_comm_type_enum()
+        .ok_or_else(|| crate::OmegaError::Validation("unknown communication type".into()))?;
+    let (_, sender_policy) = operation_policy(message_type).ok_or_else(|| {
+        crate::OmegaError::Validation(format!("no authorization policy for {message_type:?}"))
+    })?;
+    match sender_policy {
+        SenderPolicy::None => {}
+        SenderPolicy::Present => {
+            value.require_sender()?;
+        }
+        SenderPolicy::UserRoute => {
             require_user_sender(connection, value)?;
         }
-        Some(
-            mtp::codec::CommunicationType::DeleteIota
-            | mtp::codec::CommunicationType::AttachUserBegin
-            | mtp::codec::CommunicationType::AttachUserComplete
-            | mtp::codec::CommunicationType::DeleteUserCredentialBegin
-            | mtp::codec::CommunicationType::DeleteUserCredentialComplete
-            | mtp::codec::CommunicationType::ReleaseUserFromIota
-            | mtp::codec::CommunicationType::CreateUserInvitation
-            | mtp::codec::CommunicationType::ListUserInvitations
-            | mtp::codec::CommunicationType::RevokeUserInvitation
-            | mtp::codec::CommunicationType::EraseHostedUserDataAck
-            | mtp::codec::CommunicationType::AcknowledgeIotaUserProvision,
-        ) => {
+        SenderPolicy::IotaRoute => {
             require_iota_sender(connection, value)?;
         }
-        Some(
-            mtp::codec::CommunicationType::GetRegister
-            | mtp::codec::CommunicationType::CompleteRegisterUser,
-        ) => {
-            if let Some(iota_id) = value
-                .get_data(mtp::codec::DataType::IotaId)
-                .as_number()
-                .and_then(|id| i64::try_from(id).ok())
-                .filter(|id| *id > 0)
-            {
+        SenderPolicy::IotaDataRoute => {
+            if let Some(raw) = value.get_data(DataType::IotaId).as_number() {
+                let iota_id = positive_i64(raw, "iota_id")?;
                 require_iota_data_route(connection, iota_id)?;
             }
         }
-        _ => {}
     }
     Ok(())
 }
@@ -231,6 +237,26 @@ mod tests {
     };
     use crate::sql::user_online_tracker::PresenceTracker;
     use mtp::codec::{CommunicationType, CommunicationValue};
+
+    #[test]
+    fn every_dispatched_operation_has_a_policy() {
+        let source = include_str!("omikron_connection.rs");
+        let dispatch = source
+            .split("async fn dispatch(")
+            .nth(1)
+            .unwrap()
+            .split("pub(crate) async fn send(")
+            .next()
+            .unwrap();
+        for branch in dispatch.split("Some(CommunicationType::").skip(1) {
+            let name = branch.split(')').next().unwrap();
+            let message_type = mtp::codec::CommunicationType::from_name(name).unwrap();
+            assert!(
+                super::operation_policy(message_type).is_some(),
+                "missing policy for {name}"
+            );
+        }
+    }
 
     #[test]
     fn missing_request_id_is_rejected_without_a_zero_fallback() {

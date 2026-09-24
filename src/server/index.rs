@@ -13,9 +13,6 @@ Available Routes:
 - /api/get/omikron/{id}
     Returns an Omikron by ID. If {id} is a connected Iota ID or user ID,
     returns that account's primary connected Omikron instead.
-- /api/get/connections
-    Returns the current live connection map as
-    { "status": "success", "connections": { omikron_id: { iota_id: [user_id] } } }.
 - /api/get/iota/{id}
     Returns the Iota's public identity data.
 - /api/get/user/{id}
@@ -29,8 +26,7 @@ Available Routes:
 - /direct/{short_key}
     Resolves a shortened link with a temporary redirect.
 
-All IDs must be positive decimal integers. The connections endpoint reports
-live in-memory state; it is empty after an Omega restart until Omikrons sync.
+All IDs must be positive decimal integers.
 
 All non-API routes will return this documentation.
 "#;

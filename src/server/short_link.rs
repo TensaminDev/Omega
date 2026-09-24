@@ -3,11 +3,40 @@ use rand::RngExt;
 
 const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHJKLMNPRSTUVWXYZ1234567890";
 
-pub async fn add_short_link(long: &str) -> Result<String, ()> {
-    loop {
-        let raw = generate_short_link().await;
-        if short_link_repo::insert(&raw, long).await.map_err(|_| ())? {
-            let public_urls = crate::config::public_urls().map_err(|_| ())?;
+fn validate_target(long: &str, max_bytes: usize) -> crate::error::Result<()> {
+    let uri: http::Uri = long
+        .parse()
+        .map_err(|_| crate::OmegaError::Validation("invalid short-link target".into()))?;
+    if long.len() > max_bytes
+        || uri.scheme_str() != Some("https")
+        || uri
+            .authority()
+            .is_none_or(|authority| authority.host().is_empty() || authority.as_str().contains('@'))
+    {
+        return Err(crate::OmegaError::Validation(
+            "invalid short-link target".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub async fn add_short_link(
+    creator: i64,
+    long: &str,
+    config: &crate::config::OmegaConfig,
+) -> crate::error::Result<String> {
+    validate_target(long, config.max_short_link_target_bytes)?;
+    let len = short_length().await?;
+    for _ in 0..config.short_link_insert_attempts {
+        let raw: String = {
+            let mut rng = rand::rng();
+            (0..len)
+                .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+                .collect()
+        };
+        if short_link_repo::insert(creator, &raw, long, config.max_short_links_per_omikron).await? {
+            let public_urls = crate::config::public_urls()
+                .map_err(|error| crate::OmegaError::Validation(error.to_string()))?;
             return Ok(format!(
                 "{}/direct/{}",
                 public_urls.omega_base_url,
@@ -15,18 +44,9 @@ pub async fn add_short_link(long: &str) -> Result<String, ()> {
             ));
         }
     }
-}
-
-pub async fn generate_short_link() -> String {
-    let len = short_length().await;
-
-    let mut rng = rand::rng();
-    (0..len)
-        .map(|_| {
-            let idx = rng.random_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
+    Err(crate::OmegaError::Transport(
+        "short-link key allocation exhausted".into(),
+    ))
 }
 
 pub async fn get_short_link(short: &str) -> Result<String, ()> {
@@ -53,14 +73,14 @@ pub async fn get_short_link(short: &str) -> Result<String, ()> {
 
 /* ---------------- helpers ---------------- */
 
-async fn short_length() -> usize {
-    let count = short_link_repo::count().await.unwrap_or(0);
+async fn short_length() -> crate::error::Result<usize> {
+    let count = short_link_repo::count().await?;
 
-    match count {
+    Ok(match count {
         0..=1_999 => 4,
         2_000..=999_999 => 8,
         _ => 12,
-    }
+    })
 }
 
 fn format_with_dashes(s: &str) -> String {
@@ -82,4 +102,23 @@ fn normalize_short(input: &str) -> String {
             _ => c,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_target;
+
+    #[test]
+    fn short_link_targets_allow_https_only() {
+        assert!(validate_target("https://example.org/path", 2048).is_ok());
+        for target in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "http://example.org",
+            "https://user@example.org",
+        ] {
+            assert!(validate_target(target, 2048).is_err(), "{target}");
+        }
+        assert!(validate_target(&"https://example.org/".repeat(200), 2048).is_err());
+    }
 }

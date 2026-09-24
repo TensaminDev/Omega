@@ -1198,6 +1198,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "libc",
  "mtp",
  "serde",
 ]
@@ -1441,7 +1442,7 @@ dependencies = [
 [[package]]
 name = "mtp"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "mtp-client",
  "mtp-codec",
@@ -1458,7 +1459,7 @@ dependencies = [
 [[package]]
 name = "mtp-client"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -1471,7 +1472,7 @@ dependencies = [
 [[package]]
 name = "mtp-codec"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "base64 0.23.1",
  "byteorder",
@@ -1485,7 +1486,7 @@ dependencies = [
 [[package]]
 name = "mtp-common"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "rand",
  "thiserror 2.0.20",
@@ -1494,7 +1495,7 @@ dependencies = [
 [[package]]
 name = "mtp-core"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "async-trait",
  "mtp-codec",
@@ -1506,7 +1507,7 @@ dependencies = [
 [[package]]
 name = "mtp-crypto"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1529,7 +1530,7 @@ dependencies = [
 [[package]]
 name = "mtp-files"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "mtp-crypto",
  "rand",
@@ -1540,7 +1541,7 @@ dependencies = [
 [[package]]
 name = "mtp-h3"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1557,7 +1558,7 @@ dependencies = [
 [[package]]
 name = "mtp-host"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "mtp-codec",
  "mtp-common",
@@ -1574,7 +1575,7 @@ dependencies = [
 [[package]]
 name = "mtp-native"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "async-trait",
  "mtp-codec",
@@ -1596,7 +1597,7 @@ dependencies = [
 [[package]]
 name = "mtp-type-map"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -1605,7 +1606,7 @@ dependencies = [
 [[package]]
 name = "mtp-webserver"
 version = "0.3.0"
-source = "git+https://git.methanium.net/Methanium/mtp.git?rev=1f19a0d897c265d1e3f590a876f95e766ff99318#1f19a0d897c265d1e3f590a876f95e766ff99318"
+source = "git+https://git.methanium.net/Methanium/mtp.git?rev=bb0f682b735de5ebb36bb41dc699260578341828#bb0f682b735de5ebb36bb41dc699260578341828"
 dependencies = [
  "bytes",
  "h3",
@@ -1702,6 +1703,7 @@ dependencies = [
  "dotenv",
  "http",
  "iota-identity",
+ "libc",
  "mtp",
  "once_cell",
  "parking_lot",

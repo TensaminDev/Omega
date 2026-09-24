@@ -18,6 +18,14 @@ const MAX_STATUS_BYTES: usize = 255;
 const MAX_ABOUT_BYTES: usize = 1000;
 const MAX_AVATAR_BYTES: usize = 65_535;
 
+fn missing_as_none<T>(value: OmikronResult<T>) -> OmikronResult<Option<T>> {
+    match value {
+        Ok(value) => Ok(Some(value)),
+        Err(OmegaError::NotFound) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn connections(connection: &OmikronConnection, iota_id: i64) -> DataValue {
     DataValue::Array(
         connection
@@ -44,9 +52,9 @@ pub async fn get_user(
         .and_then(|id| i64::try_from(id).ok())
         .filter(|id| *id > 0)
     {
-        user_repo::get_by_user_id(UserId::from(id)).await.ok()
+        missing_as_none(user_repo::get_by_user_id(UserId::from(id)).await)?
     } else if let Some(name) = value.get_data(DataType::Username).as_str() {
-        user_repo::get_by_username(name).await.ok()
+        missing_as_none(user_repo::get_by_username(name).await)?
     } else {
         None
     };
@@ -147,18 +155,14 @@ pub async fn get_iota(
         .and_then(|id| i64::try_from(id).ok())
         .filter(|id| *id > 0)
     {
-        iota_repo::get_iota_by_id(IotaId::from(id))
-            .await
-            .ok()
+        missing_as_none(iota_repo::get_iota_by_id(IotaId::from(id)).await)?
             .map(|iota| (iota.id.0, iota.public_key, None, None))
     } else if let Some(id) = value.get_data(DataType::UserId).as_number() {
         if let Some(id) = i64::try_from(id).ok().filter(|id| *id > 0)
             && let Ok(user) = user_repo::get_by_user_id(UserId::from(id)).await
         {
             match user.iota_id {
-                Some(iota_id) => iota_repo::get_iota_by_id(iota_id)
-                    .await
-                    .ok()
+                Some(iota_id) => missing_as_none(iota_repo::get_iota_by_id(iota_id).await)?
                     .map(|iota| (iota.id.0, iota.public_key, Some(user.id.0), None)),
                 None => None,
             }
@@ -166,16 +170,18 @@ pub async fn get_iota(
             None
         }
     } else if let Some(name) = value.get_data(DataType::Username).as_str() {
-        if let Ok(user) = user_repo::get_by_username(name).await {
+        if let Some(user) = missing_as_none(user_repo::get_by_username(name).await)? {
             match user.iota_id {
-                Some(iota_id) => iota_repo::get_iota_by_id(iota_id).await.ok().map(|iota| {
-                    (
-                        iota.id.0,
-                        iota.public_key,
-                        Some(user.id.0),
-                        Some(name.to_owned()),
-                    )
-                }),
+                Some(iota_id) => {
+                    missing_as_none(iota_repo::get_iota_by_id(iota_id).await)?.map(|iota| {
+                        (
+                            iota.id.0,
+                            iota.public_key,
+                            Some(user.id.0),
+                            Some(name.to_owned()),
+                        )
+                    })
+                }
                 None => None,
             }
         } else {

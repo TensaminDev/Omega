@@ -13,9 +13,7 @@ pub async fn shorten(
     let link = link_data
         .as_str()
         .ok_or(crate::error::OmegaError::InvalidResponse)?;
-    let short = add_short_link(link)
-        .await
-        .map_err(|_| crate::error::OmegaError::Transport("short link error".to_string()))?;
+    let short = add_short_link(connection.id_i64(), link, &connection.state().config).await?;
     let response = CommunicationValue::new(CommunicationType::ShortenLink)
         .with_id(value.require_id()?)
         .add_typed_default(DataType::Link, DataValue::Str(short));

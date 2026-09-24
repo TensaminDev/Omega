@@ -80,6 +80,8 @@ pub struct OmikronConnection {
     handler_tasks: TaskTracker,
     handler_cancel: CancellationToken,
     handler_limit: Arc<Semaphore>,
+    relay_limit: Arc<Semaphore>,
+    relay_budget: StdMutex<(Instant, u64)>,
     ordered_sender: mpsc::Sender<CommunicationValue>,
     ordered_receiver: StdMutex<Option<mpsc::Receiver<CommunicationValue>>>,
     peer_capabilities: PeerCapabilities,
@@ -109,6 +111,7 @@ impl OmikronConnection {
         let peer_capabilities =
             PeerCapabilities::from_identification_description(description).ok()?;
         let handler_concurrency = state.omikron_handler_concurrency;
+        let relay_concurrency = state.config.dispatch.relay_max_concurrent;
         let (ordered_sender, ordered_receiver) = mpsc::channel(handler_concurrency);
         Some(Arc::new(Self {
             id,
@@ -119,6 +122,8 @@ impl OmikronConnection {
             handler_tasks: TaskTracker::new(),
             handler_cancel: CancellationToken::new(),
             handler_limit: Arc::new(Semaphore::new(handler_concurrency)),
+            relay_limit: Arc::new(Semaphore::new(relay_concurrency)),
+            relay_budget: StdMutex::new((Instant::now(), 0)),
             ordered_sender,
             ordered_receiver: StdMutex::new(Some(ordered_receiver)),
             peer_capabilities,
@@ -408,6 +413,39 @@ impl OmikronConnection {
         if value.is_type(CommunicationType::Relay) {
             let value = crate::transport::relay_router::ensure_relay_frame_id(value);
             let request_id = value.id();
+            let admitted = self.relay_limit.clone().try_acquire_owned().ok();
+            let bytes = value
+                .payload()
+                .as_encrypted()
+                .map(|payload| payload.ciphertext.len() as u64);
+            let allowed = {
+                let mut budget = self.relay_budget.lock().unwrap();
+                if budget.0.elapsed() >= self.state.config.dispatch.relay_window {
+                    *budget = (Instant::now(), 0);
+                }
+                admitted
+                    .as_ref()
+                    .and(bytes)
+                    .and_then(|bytes| budget.1.checked_add(bytes))
+                    .filter(|total| *total <= self.state.config.dispatch.relay_bytes_per_window)
+                    .map(|total| {
+                        budget.1 = total;
+                    })
+                    .is_some()
+            };
+            if admitted.is_none() || !allowed {
+                log_err!(id, PrintType::Omega, "Relay admission limit reached");
+                if let Some(request_id) = request_id {
+                    self.clone()
+                        .send(
+                            &CommunicationValue::new(CommunicationType::ErrorInternal)
+                                .with_id(request_id),
+                        )
+                        .await?;
+                }
+                return Ok(());
+            }
+            let _relay_permit = admitted;
             let result =
                 crate::transport::relay_router::route_from_omikron(&state, id, value).await;
             let response = match &result {

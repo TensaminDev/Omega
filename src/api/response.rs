@@ -1,5 +1,4 @@
 use serde::Serialize;
-use std::collections::BTreeMap;
 
 #[derive(Serialize)]
 pub struct StatusResponse {
@@ -29,8 +28,6 @@ pub struct UserResponse {
     pub public_key: String,
     pub user_id: i64,
     pub iota_id: Option<i64>,
-    pub sub_level: i32,
-    pub sub_end: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
     #[serde(rename = "status_message", skip_serializing_if = "Option::is_none")]
@@ -48,15 +45,6 @@ pub struct UsernameResponse {
     pub public_key: String,
     pub user_id: i64,
     pub iota_id: Option<i64>,
-    pub sub_level: i32,
-    pub sub_end: i64,
-}
-
-#[derive(Serialize)]
-pub struct ConnectionsResponse {
-    pub status: &'static str,
-    #[serde(flatten)]
-    pub connections: BTreeMap<String, BTreeMap<String, Vec<i64>>>,
 }
 
 #[derive(Serialize)]
@@ -67,4 +55,27 @@ pub struct PublicKeyResponse {
 
 pub fn json<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "{\"status\":\"error\"}".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_user_response_excludes_account_subscription() {
+        let response = UserResponse {
+            status: "success",
+            username: "alice".into(),
+            public_key: "public".into(),
+            user_id: 42,
+            iota_id: Some(7),
+            display: None,
+            status_message: None,
+            about: None,
+            avatar: None,
+        };
+        let value = serde_json::to_value(response).unwrap();
+        assert!(value.get("sub_level").is_none());
+        assert!(value.get("sub_end").is_none());
+    }
 }

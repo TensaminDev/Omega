@@ -56,11 +56,12 @@ async fn main() {
             return;
         }
     };
+    let database_config = config.database.clone();
     let state = OmegaState::new(identity, config);
 
     log!("Started");
     log!("  .env");
-    if let Err(e) = initialize().await {
+    if let Err(e) = initialize(&database_config).await {
         log!("[FATAL] Database initialization failed: {}", e);
         log!(
             "[FATAL] Please ensure the database is running and the .env file is configured correctly."

@@ -5,12 +5,41 @@ use mtp::files::{
 };
 use std::{
     fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
 };
+
+#[cfg(unix)]
+fn verify_private_keyring(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file()
+        || metadata.mode() & 0o077 != 0
+        || metadata.uid() != unsafe { libc::geteuid() }
+    {
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "keyring must be a regular owner-only file owned by the service user",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_private_keyring(_: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "keyring permissions cannot be verified on this platform",
+    ))
+}
 
 pub const KEYRING_PATH: &str = "./omega.mk";
 pub const PUBLIC_KEY_PATH: &str = "./omega.mpkb";
@@ -32,6 +61,10 @@ impl OmegaIdentity {
     ) -> Result<Self> {
         let keyring_path = keyring_path.as_ref();
         let public_key_path = public_key_path.as_ref();
+        verify_private_keyring(keyring_path).map_err(|error| IdentityError::Io {
+            path: keyring_path.to_path_buf(),
+            source: error,
+        })?;
         let keyring = match load_keyring_raw(keyring_path) {
             Ok(keyring) => keyring,
             Err(FileError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {

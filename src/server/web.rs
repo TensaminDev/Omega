@@ -32,7 +32,6 @@ pub fn build_web_config(
         .route("/.well-known/tensamin", api_handler(state.clone()))?
         .route("/api/download/iota_frontend", api_handler(state.clone()))?
         .route("/api/get/omikron", api_handler(state.clone()))?
-        .route("/api/get/connections", api_handler(state.clone()))?
         .route("/api/get/public_key", api_handler(state.clone()))?
         .route_pattern("/api/get/omikron/{id}", api_pattern_handler(state.clone()))?
         .route_pattern(

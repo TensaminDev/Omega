@@ -12,6 +12,9 @@ pub struct RateLimitConfig {
 
 #[derive(Clone, Debug)]
 pub struct DispatchConfig {
+    pub relay_max_concurrent: usize,
+    pub relay_bytes_per_window: u64,
+    pub relay_window: Duration,
     pub omikron_handler_concurrency: usize,
     pub global_handler_concurrency: usize,
 }
@@ -23,10 +26,23 @@ pub struct TransportConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct DatabaseConfig {
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub acquire_timeout: Duration,
+    pub idle_timeout: Duration,
+    pub max_lifetime: Duration,
+}
+
+#[derive(Clone, Debug)]
 pub struct OmegaConfig {
     pub rate_limits: RateLimitConfig,
+    pub database: DatabaseConfig,
     pub dispatch: DispatchConfig,
     pub transport: TransportConfig,
+    pub max_short_link_target_bytes: usize,
+    pub max_short_links_per_omikron: i64,
+    pub short_link_insert_attempts: usize,
     pub logger_queue_capacity: usize,
 }
 
@@ -89,6 +105,9 @@ impl RateLimitConfig {
 impl Default for DispatchConfig {
     fn default() -> Self {
         Self {
+            relay_max_concurrent: 16,
+            relay_bytes_per_window: 64 * 1024 * 1024,
+            relay_window: Duration::from_secs(60),
             omikron_handler_concurrency: 32,
             global_handler_concurrency: 256,
         }
@@ -99,11 +118,21 @@ impl Default for OmegaConfig {
     fn default() -> Self {
         Self {
             rate_limits: RateLimitConfig::default(),
+            database: DatabaseConfig {
+                max_connections: 200,
+                min_connections: 0,
+                acquire_timeout: Duration::from_secs(10),
+                idle_timeout: Duration::from_secs(600),
+                max_lifetime: Duration::from_secs(1800),
+            },
             dispatch: DispatchConfig::default(),
             transport: TransportConfig {
                 max_message_size: 16 * 1024 * 1024,
                 handshake_max_message_size: 64 * 1024,
             },
+            max_short_link_target_bytes: 2048,
+            max_short_links_per_omikron: 10000,
+            short_link_insert_attempts: 16,
             logger_queue_capacity: 1024,
         }
     }
@@ -113,9 +142,51 @@ impl OmegaConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let defaults = Self::default();
         PublicUrlConfig::from_env()?;
-        Ok(Self {
+        let config = Self {
             rate_limits: RateLimitConfig::from_env()?,
+            database: DatabaseConfig {
+                max_connections: u32::try_from(env_usize(
+                    "OMEGA_DB_MAX_CONNECTIONS",
+                    defaults.database.max_connections as usize,
+                )?)
+                .map_err(|_| ConfigError::InvalidValue {
+                    name: "OMEGA_DB_MAX_CONNECTIONS".into(),
+                    value: "out of range".into(),
+                })?,
+                min_connections: u32::try_from(env_usize_allow_zero(
+                    "OMEGA_DB_MIN_CONNECTIONS",
+                    defaults.database.min_connections as usize,
+                )?)
+                .map_err(|_| ConfigError::InvalidValue {
+                    name: "OMEGA_DB_MIN_CONNECTIONS".into(),
+                    value: "out of range".into(),
+                })?,
+                acquire_timeout: env_duration(
+                    "OMEGA_DB_ACQUIRE_TIMEOUT_SECONDS",
+                    defaults.database.acquire_timeout,
+                )?,
+                idle_timeout: env_duration(
+                    "OMEGA_DB_IDLE_TIMEOUT_SECONDS",
+                    defaults.database.idle_timeout,
+                )?,
+                max_lifetime: env_duration(
+                    "OMEGA_DB_MAX_LIFETIME_SECONDS",
+                    defaults.database.max_lifetime,
+                )?,
+            },
             dispatch: DispatchConfig {
+                relay_max_concurrent: env_usize(
+                    "OMEGA_RELAY_MAX_CONCURRENT",
+                    defaults.dispatch.relay_max_concurrent,
+                )?,
+                relay_bytes_per_window: env_u64(
+                    "OMEGA_RELAY_BYTES_PER_WINDOW",
+                    defaults.dispatch.relay_bytes_per_window,
+                )?,
+                relay_window: env_duration(
+                    "OMEGA_RELAY_WINDOW_SECONDS",
+                    defaults.dispatch.relay_window,
+                )?,
                 omikron_handler_concurrency: env_usize(
                     "OMEGA_OMIKRON_HANDLER_CONCURRENCY",
                     defaults.dispatch.omikron_handler_concurrency,
@@ -135,11 +206,34 @@ impl OmegaConfig {
                     defaults.transport.handshake_max_message_size,
                 )?,
             },
+            max_short_link_target_bytes: env_usize(
+                "OMEGA_SHORT_LINK_MAX_TARGET_BYTES",
+                defaults.max_short_link_target_bytes,
+            )?,
+            max_short_links_per_omikron: i64::try_from(env_usize(
+                "OMEGA_SHORT_LINK_MAX_PER_OMIKRON",
+                usize::try_from(defaults.max_short_links_per_omikron).unwrap(),
+            )?)
+            .map_err(|_| ConfigError::InvalidValue {
+                name: "OMEGA_SHORT_LINK_MAX_PER_OMIKRON".into(),
+                value: "out of range".into(),
+            })?,
+            short_link_insert_attempts: env_usize(
+                "OMEGA_SHORT_LINK_INSERT_ATTEMPTS",
+                defaults.short_link_insert_attempts,
+            )?,
             logger_queue_capacity: env_usize(
                 "LOGGER_QUEUE_CAPACITY",
                 defaults.logger_queue_capacity,
             )?,
-        })
+        };
+        if config.database.min_connections > config.database.max_connections {
+            return Err(ConfigError::InvalidValue {
+                name: "OMEGA_DB_MIN_CONNECTIONS".into(),
+                value: "exceeds maximum".into(),
+            });
+        }
+        Ok(config)
     }
 }
 
@@ -167,6 +261,19 @@ impl PublicUrlConfig {
 
 pub fn public_urls() -> Result<PublicUrlConfig, ConfigError> {
     PublicUrlConfig::from_env()
+}
+
+fn env_usize_allow_zero(name: &str, fallback: usize) -> Result<usize, ConfigError> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse::<usize>()
+            .map_err(|_| ConfigError::InvalidValue {
+                name: name.into(),
+                value,
+            }),
+        Err(env::VarError::NotPresent) => Ok(fallback),
+        Err(env::VarError::NotUnicode(_)) => Err(ConfigError::InvalidUnicode { name: name.into() }),
+    }
 }
 
 fn env_usize(name: &str, fallback: usize) -> Result<usize, ConfigError> {

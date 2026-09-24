@@ -1,6 +1,6 @@
 use crate::api::response::{
-    ConnectionsResponse, IotaResponse, OmikronResponse, PublicKeyResponse, StatusResponse,
-    UserResponse, UsernameResponse, json,
+    IotaResponse, OmikronResponse, PublicKeyResponse, StatusResponse, UserResponse,
+    UsernameResponse, json,
 };
 use crate::db::{
     iota_repo::{get_iota_by_id, get_node_descriptor, publish_node_descriptor},
@@ -18,15 +18,12 @@ use crate::server::{
     with_cors,
 };
 use crate::state::OmegaState;
-use crate::transport::omikron_manager::{
-    get_all_connections, get_iota_primary_omikron_connection, get_random_omikron,
-};
+use crate::transport::omikron_manager::{get_iota_primary_omikron_connection, get_random_omikron};
 use crate::util::file_util::get_directory;
 use base64::Engine as _;
 use bytes::Bytes;
 use http::{Method, StatusCode};
 use mtp::webserver::{HttpRequest, HttpResponse, RouteParams};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
@@ -47,8 +44,6 @@ fn user_response(user: crate::models::User) -> Result<UserResponse> {
         public_key: user.public_key.try_to_base64()?,
         user_id: user.id.0,
         iota_id: user.iota_id.map(|id| id.0),
-        sub_level: user.sub_level,
-        sub_end: user.sub_end,
         display: user.display,
         status_message: user.status,
         about: user.about,
@@ -267,28 +262,6 @@ async fn route(
                 }),
             ))
         }
-        ["api", "get", "connections"] => {
-            let connections = get_all_connections(state)
-                .await
-                .map_err(|_| OmegaError::Transport("failed to load connections".to_string()))?;
-            let connections = connections
-                .into_iter()
-                .map(|(omikron_id, iotas)| {
-                    let iotas = iotas
-                        .into_iter()
-                        .map(|(iota_id, users)| (iota_id.to_string(), users.into_iter().collect()))
-                        .collect();
-                    (omikron_id.to_string(), iotas)
-                })
-                .collect::<BTreeMap<_, _>>();
-            Ok((
-                StatusCode::OK,
-                json(&ConnectionsResponse {
-                    status: "success",
-                    connections,
-                }),
-            ))
-        }
         ["api", "get", "iota", id] => {
             let id = parse_positive_id(id)?;
             let iota = get_iota_by_id(id.into()).await?;
@@ -312,8 +285,6 @@ async fn route(
                     public_key: user.public_key.try_to_base64()?,
                     user_id: user.id.0,
                     iota_id: user.iota_id.map(|id| id.0),
-                    sub_level: user.sub_level,
-                    sub_end: user.sub_end,
                 }),
             ))
         }
