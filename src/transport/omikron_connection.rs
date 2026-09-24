@@ -185,6 +185,7 @@ impl OmikronConnection {
                         }
                     }
                 };
+                let request_id = value.id();
                 let result = tokio::select! {
                     _ = cancellation.cancelled() => break,
                     result = connection.clone().dispatch(value) => result,
@@ -198,6 +199,18 @@ impl OmikronConnection {
                         "Error processing ordered Omikron message: {}",
                         error
                     );
+                    if let Some(request_id) = request_id {
+                        let response_type = match error {
+                            crate::OmegaError::NotAuthenticated => {
+                                CommunicationType::ErrorNotAuthenticated
+                            }
+                            _ => CommunicationType::ErrorInternal,
+                        };
+                        let _ = connection
+                            .clone()
+                            .send_error_response(request_id, response_type)
+                            .await;
+                    }
                 }
             }
         });
@@ -374,6 +387,9 @@ impl OmikronConnection {
         };
         let connection = self.clone();
         let cancellation = self.handler_cancel.clone();
+        let request_id = value
+            .id()
+            .filter(|_| !value.is_type(CommunicationType::Relay));
         self.track_handler(async move {
             tokio::select! {
                 _ = cancellation.cancelled() => {}
@@ -385,6 +401,13 @@ impl OmikronConnection {
                             "Error processing Omikron message: {}",
                             error
                         );
+                        if let Some(request_id) = request_id {
+                            let response_type = match error {
+                                crate::OmegaError::NotAuthenticated => CommunicationType::ErrorNotAuthenticated,
+                                _ => CommunicationType::ErrorInternal,
+                            };
+                            let _ = connection.clone().send_error_response(request_id, response_type).await;
+                        }
                     }
                 }
             }
