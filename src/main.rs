@@ -42,7 +42,13 @@ async fn main() {
             return;
         }
     };
-    startup(config.logger_queue_capacity);
+    let _logger_guard = match startup(config.logger_queue_capacity) {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!("[FATAL] Unable to initialize Omega logger: {error}");
+            return;
+        }
+    };
     log_in!("Incoming messages");
     log_out!("Outgoing messages");
     if middleware::initialize_config(config.rate_limits.clone()).is_err() {

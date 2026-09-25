@@ -25,7 +25,28 @@ use bytes::Bytes;
 use http::{Method, StatusCode};
 use mtp::webserver::{HttpRequest, HttpResponse, RouteParams};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::AsyncReadExt;
+use uuid::Uuid;
+
+fn route_name(parts: &[&str]) -> &'static str {
+    match parts {
+        ["api", "download", "iota_frontend"] => "/api/download/iota_frontend",
+        ["api", "get", "user", _] => "/api/get/user/:id",
+        ["direct", ..] => "/direct/:short",
+        ["api", "get", "id", _] => "/api/get/id/:username",
+        ["api", "get", "iota", _] => "/api/get/iota/:id",
+        ["api", "get", "omikron", _] => "/api/get/omikron/:id",
+        ["api", "get", "registration-omikron", _] => "/api/get/registration-omikron/:id",
+        ["federation", "v1", "users", "id", _] => "/federation/v1/users/id/:id",
+        ["federation", "v1", "users", "name", _] => "/federation/v1/users/name/:username",
+        ["federation", "v1", "iotas", _, "node"] => "/federation/v1/iotas/:id/node",
+        [".well-known", "tensamin"] => "/.well-known/tensamin",
+        ["api", "get", "omikron"] => "/api/get/omikron",
+        ["api", "get", "public_key"] => "/api/get/public_key",
+        _ => "unmatched",
+    }
+}
 
 fn error_body(error: &OmegaError) -> String {
     json(&StatusResponse {
@@ -318,19 +339,43 @@ pub async fn handle(
     response: HttpResponse,
     state: Arc<OmegaState>,
 ) -> HttpResponse {
+    let started = Instant::now();
+    let request_id = Uuid::new_v4();
     let method = request.method;
     let path = request.uri.path().to_string();
+    let path_parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let route_label = route_name(&path_parts);
+    let finish = |response: HttpResponse, status: StatusCode| {
+        crate::log_event!(
+            0,
+            crate::util::logger::PrintType::Omega,
+            crate::util::logger::LogLevel::Info,
+            "http.request_completed",
+            "request_id={} method={} route={} status={} elapsed_ms={}",
+            request_id,
+            method,
+            route_label,
+            status.as_u16(),
+            started.elapsed().as_millis()
+        );
+        with_cors(response.header("x-request-id", &request_id.to_string()))
+    };
     if method != Method::OPTIONS && !middleware::allow(request.remote_addr.ip(), &path) {
-        return with_cors(response.status(StatusCode::TOO_MANY_REQUESTS).body(json(
-            &StatusResponse {
-                status: "error_rate_limited",
-            },
-        )));
+        return finish(
+            response
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(json(&StatusResponse {
+                    status: "error_rate_limited",
+                })),
+            StatusCode::TOO_MANY_REQUESTS,
+        );
     }
     if method == Method::OPTIONS {
-        return with_cors(response.status(StatusCode::NO_CONTENT));
+        return finish(
+            response.status(StatusCode::NO_CONTENT),
+            StatusCode::NO_CONTENT,
+        );
     }
-    let path_parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     if let ["api", "download", "iota_frontend"] = path_parts.as_slice() {
         let file_path = format!("{}/downloads/iota_frontend.zip", get_directory());
         return match tokio::fs::File::open(file_path).await {
@@ -341,7 +386,19 @@ pub async fn handle(
                     let mut buffer = vec![0_u8; 64 * 1024];
                     loop {
                         let read = match file.read(&mut buffer).await {
-                            Ok(0) | Err(_) => return,
+                            Ok(0) => return,
+                            Err(error) => {
+                                crate::log_event!(
+                                    0,
+                                    crate::util::logger::PrintType::Omega,
+                                    crate::util::logger::LogLevel::Error,
+                                    "http.download_read_failed",
+                                    "request_id={} error={}",
+                                    request_id,
+                                    error
+                                );
+                                return;
+                            }
                             Ok(read) => read,
                         };
                         if tx
@@ -364,26 +421,30 @@ pub async fn handle(
                 if let Some(content_length) = content_length {
                     response = response.header("content-length", &content_length.to_string());
                 }
-                with_cors(response)
+                finish(response, StatusCode::OK)
             }
-            Err(_) => with_cors(response.status(StatusCode::NOT_FOUND).body(json(
-                &StatusResponse {
-                    status: "error_not_found",
-                },
-            ))),
+            Err(_) => finish(
+                response
+                    .status(StatusCode::NOT_FOUND)
+                    .body(json(&StatusResponse {
+                        status: "error_not_found",
+                    })),
+                StatusCode::NOT_FOUND,
+            ),
         };
     }
     if let ["direct", short @ ..] = path_parts.as_slice() {
         let short = short.join("");
         return match crate::server::short_link::get_short_link(&short).await {
-            Ok(location) => with_cors(
+            Ok(location) => finish(
                 response
                     .status(StatusCode::TEMPORARY_REDIRECT)
                     .header("location", &location)
                     .header("cache-control", "no-store")
                     .header("referrer-policy", "no-referrer"),
+                StatusCode::TEMPORARY_REDIRECT,
             ),
-            Err(_) => with_cors(
+            Err(_) => finish(
                 response
                     .status(StatusCode::NOT_FOUND)
                     .header("cache-control", "no-store")
@@ -391,6 +452,7 @@ pub async fn handle(
                     .body(json(&StatusResponse {
                         status: "error_not_found",
                     })),
+                StatusCode::NOT_FOUND,
             ),
         };
     }
@@ -403,7 +465,7 @@ pub async fn handle(
     )
     .await
     .unwrap_or_else(|error| (error.status_code(), error_body(&error)));
-    with_cors(response.status(status).body(body))
+    finish(response.status(status).body(body), status)
 }
 
 pub async fn handle_pattern(

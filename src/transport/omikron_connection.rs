@@ -2,7 +2,7 @@ use super::capabilities::{OmegaCapabilities, PeerCapabilities};
 use crate::models::OmikronId;
 use crate::{
     config::TransportConfig,
-    log, log_cv_in, log_cv_out, log_err, log_in, server,
+    log, log_cv_in, log_cv_out, log_err, log_event, log_in, server,
     state::OmegaState,
     transport::connection::{
         RequiredMtpFields, validate_dispatch_fields, validate_dispatch_sender,
@@ -610,16 +610,34 @@ impl OmikronConnection {
         }
     }
 
-    pub(crate) async fn send(self: Arc<Self>, value: &CommunicationValue) -> OmikronResult<()> {
+    async fn send_one(
+        &self,
+        sender: &WebMtpSender,
+        value: &CommunicationValue,
+    ) -> OmikronResult<()> {
         log_cv_out!(PrintType::Omikron, value);
+        if let Err(error) = sender.send(value).await {
+            log_event!(
+                self.id_i64(),
+                PrintType::Omikron,
+                crate::util::logger::LogLevel::Error,
+                "omikron.send_failed",
+                "message_id={:?} message_type={} error={}",
+                value.id(),
+                value.get_type_name().unwrap_or("unknown"),
+                error
+            );
+            return Err(crate::error::OmegaError::SendError(error.to_string()));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn send(self: Arc<Self>, value: &CommunicationValue) -> OmikronResult<()> {
         let guard = self.sender.lock().await;
         let sender = guard
             .as_ref()
             .ok_or(crate::error::OmegaError::NotConnected)?;
-        sender
-            .send(value)
-            .await
-            .map_err(|error| crate::error::OmegaError::SendError(error.to_string()))
+        self.send_one(sender, value).await
     }
 
     pub(crate) async fn send_messages(
@@ -631,11 +649,7 @@ impl OmikronConnection {
             .as_ref()
             .ok_or(crate::error::OmegaError::NotConnected)?;
         for value in values {
-            log_cv_out!(PrintType::Omikron, value);
-            sender
-                .send(value)
-                .await
-                .map_err(|error| crate::error::OmegaError::SendError(error.to_string()))?;
+            self.send_one(sender, value).await?;
         }
         Ok(())
     }

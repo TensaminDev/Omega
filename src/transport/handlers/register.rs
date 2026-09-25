@@ -75,12 +75,17 @@ pub async fn complete_iota(
                 .await
         }
         Err(error) => {
+            crate::log_event!(
+                connection.id_i64(),
+                crate::util::logger::PrintType::Omega,
+                crate::util::logger::LogLevel::Error,
+                "registration.iota_failed",
+                "request_id={} error={}",
+                value.require_id()?,
+                error
+            );
             connection
-                .send(
-                    &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.require_id()?)
-                        .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
-                )
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
         }
     }
@@ -170,12 +175,17 @@ pub async fn complete_user(
                 .await
         }
         Err(error) => {
+            crate::log_event!(
+                connection.id_i64(),
+                crate::util::logger::PrintType::Omega,
+                crate::util::logger::LogLevel::Error,
+                "registration.user_failed",
+                "request_id={} error={}",
+                value.require_id()?,
+                error
+            );
             connection
-                .send(
-                    &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.require_id()?)
-                        .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
-                )
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
         }
     }

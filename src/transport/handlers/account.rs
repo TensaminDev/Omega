@@ -1,10 +1,12 @@
 use super::super::connection::{
     OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
+use crate::log_event;
 use crate::{
     db::{iota_repo, user_repo},
     models::{IotaId, UserId},
     state::AccountChallengeOperation,
+    util::logger::{LogLevel, PrintType},
 };
 use mtp::{
     codec::{CommunicationType, CommunicationValue, DataType, DataValue},
@@ -49,7 +51,19 @@ pub async fn iota(
                 .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
             for omikron_id in omikron_ids {
                 if let Some(target) = connection.state().connected_omikron(omikron_id) {
-                    let _ = target.send_message(&invalidation).await;
+                    if let Err(error) = target.send_message(&invalidation).await {
+                        log_event!(
+                            connection.id_i64(),
+                            PrintType::Omega,
+                            LogLevel::Warn,
+                            "account.invalidation_delivery_failed",
+                            "request_id={} iota_id={} target_omikron_id={} error={}",
+                            request_id,
+                            iota_id,
+                            omikron_id,
+                            error
+                        );
+                    }
                 }
             }
             response_result
@@ -69,12 +83,18 @@ pub async fn iota(
                 .await
         }
         Err(error) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Error,
+                "account.delete_failed",
+                "request_id={} iota_id={} error={}",
+                request_id,
+                iota_id,
+                error
+            );
             connection
-                .send(
-                    &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(request_id)
-                        .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
-                )
+                .send_error_response(request_id, CommunicationType::ErrorInternal)
                 .await
         }
     }
@@ -113,12 +133,35 @@ pub async fn release_from_iota(
     let previous_iota = user.iota_id;
     match user_repo::change_iota_id(user.id, None).await {
         Ok(()) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Info,
+                "account.released",
+                "request_id={} user_id={} iota_id={}",
+                value.require_id()?,
+                user_id,
+                requester.0
+            );
             if let Some(iota) = previous_iota {
-                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                     &connection.state(),
                     iota.0,
                 )
-                .await;
+                .await
+                {
+                    log_event!(
+                        connection.id_i64(),
+                        PrintType::Omega,
+                        LogLevel::Warn,
+                        "account.snapshot_publish_failed",
+                        "request_id={} user_id={} iota_id={} error={}",
+                        value.require_id()?,
+                        user_id,
+                        iota.0,
+                        error
+                    );
+                }
             }
             connection
                 .send(
@@ -128,12 +171,18 @@ pub async fn release_from_iota(
                 .await
         }
         Err(error) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Error,
+                "account.release_failed",
+                "request_id={} user_id={} error={}",
+                value.require_id()?,
+                user_id,
+                error
+            );
             connection
-                .send(
-                    &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.require_id()?)
-                        .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
-                )
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
         }
     }
@@ -258,18 +307,54 @@ pub async fn attach_complete(
     let previous_iota = user.iota_id;
     match user_repo::change_iota_id(user.id, Some(IotaId::from(requester))).await {
         Ok(()) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Info,
+                "account.attached",
+                "request_id={} user_id={} iota_id={}",
+                value.require_id()?,
+                user_id,
+                requester
+            );
             if let Some(iota) = previous_iota.filter(|id| id.0 != requester) {
-                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                     &connection.state(),
                     iota.0,
                 )
-                .await;
+                .await
+                {
+                    log_event!(
+                        connection.id_i64(),
+                        PrintType::Omega,
+                        LogLevel::Warn,
+                        "account.snapshot_publish_failed",
+                        "request_id={} user_id={} iota_id={} error={}",
+                        value.require_id()?,
+                        user_id,
+                        iota.0,
+                        error
+                    );
+                }
             }
-            let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+            if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                 &connection.state(),
                 requester,
             )
-            .await;
+            .await
+            {
+                log_event!(
+                    connection.id_i64(),
+                    PrintType::Omega,
+                    LogLevel::Warn,
+                    "account.snapshot_publish_failed",
+                    "request_id={} user_id={} iota_id={} error={}",
+                    value.require_id()?,
+                    user_id,
+                    requester,
+                    error
+                );
+            }
             connection
                 .send(
                     &CommunicationValue::new(CommunicationType::Success)
@@ -277,7 +362,18 @@ pub async fn attach_complete(
                 )
                 .await
         }
-        Err(_) => {
+        Err(error) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Error,
+                "account.attach_failed",
+                "request_id={} user_id={} iota_id={} error={}",
+                value.require_id()?,
+                user_id,
+                requester,
+                error
+            );
             connection
                 .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
@@ -292,6 +388,16 @@ async fn complete_delete(
 ) -> OmikronResult<()> {
     match user_repo::delete_user_with_pending_erasure(user_id).await {
         Ok(iota_id) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Info,
+                "account.deleted",
+                "request_id={} user_id={} iota_id={:?}",
+                value.require_id()?,
+                user_id.0,
+                iota_id.map(|id| id.0)
+            );
             let cleanup_pending = iota_id.is_some();
             let target_omikrons = connection
                 .state()
@@ -302,11 +408,24 @@ async fn complete_delete(
                 .collect::<std::collections::HashSet<_>>();
             connection.state().presence.remove_user_sessions(user_id.0);
             if let Some(iota_id) = iota_id {
-                let _ = crate::transport::omikron_manager::publish_iota_user_snapshot(
+                if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                     &connection.state(),
                     iota_id.0,
                 )
-                .await;
+                .await
+                {
+                    log_event!(
+                        connection.id_i64(),
+                        PrintType::Omega,
+                        LogLevel::Warn,
+                        "account.snapshot_publish_failed",
+                        "request_id={} user_id={} iota_id={} error={}",
+                        value.require_id()?,
+                        user_id.0,
+                        iota_id.0,
+                        error
+                    );
+                }
                 crate::transport::omikron_manager::deliver_pending_erasures(
                     &connection.state(),
                     iota_id.0,
@@ -329,7 +448,19 @@ async fn complete_delete(
                 .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.0.into()));
             for omikron_id in target_omikrons {
                 if let Some(target) = connection.state().connected_omikron(omikron_id) {
-                    let _ = target.send_message(&invalidation).await;
+                    if let Err(error) = target.send_message(&invalidation).await {
+                        log_event!(
+                            connection.id_i64(),
+                            PrintType::Omega,
+                            LogLevel::Warn,
+                            "account.invalidation_delivery_failed",
+                            "request_id={} user_id={} target_omikron_id={} error={}",
+                            value.require_id()?,
+                            user_id.0,
+                            omikron_id,
+                            error
+                        );
+                    }
                 }
             }
             response_result
@@ -340,12 +471,18 @@ async fn complete_delete(
                 .await
         }
         Err(error) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Error,
+                "account.delete_failed",
+                "request_id={} user_id={} error={}",
+                value.require_id()?,
+                user_id.0,
+                error
+            );
             connection
-                .send(
-                    &CommunicationValue::new(CommunicationType::ErrorInternal)
-                        .with_id(value.require_id()?)
-                        .add_typed_default(DataType::ErrorType, DataValue::Str(error.to_string())),
-                )
+                .send_error_response(value.require_id()?, CommunicationType::ErrorInternal)
                 .await
         }
     }

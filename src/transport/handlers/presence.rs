@@ -289,7 +289,6 @@ pub async fn user_connected(
     value: CommunicationValue,
     omikron_id: i64,
 ) -> OmikronResult<()> {
-    log_in!(crate::util::logger::PrintType::Omega, "User connected");
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_number()
@@ -346,6 +345,18 @@ pub async fn user_connected(
     state
         .presence
         .track_session(user_id, session_id, omikron_id, iota_id);
+    crate::log_event!(
+        omikron_id,
+        crate::util::logger::PrintType::Omega,
+        crate::util::logger::LogLevel::Info,
+        "presence.user_connected",
+        "request_id={} user_id={} session_id={} iota_id={} omikron_id={}",
+        value.require_id()?,
+        user_id,
+        session_id,
+        iota_id,
+        omikron_id
+    );
     publish_changed_states(&state, &before, &users).await;
     connection
         .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
@@ -358,7 +369,6 @@ pub async fn user_disconnected(
     value: CommunicationValue,
     omikron_id: i64,
 ) -> OmikronResult<()> {
-    log_in!(crate::util::logger::PrintType::Omega, "User disconnected");
     let Some(user_id) = value
         .get_data(DataType::UserId)
         .as_number()
@@ -393,6 +403,17 @@ pub async fn user_disconnected(
             .presence
             .remove_session(user_id, session_id, omikron_id);
     }
+    crate::log_event!(
+        omikron_id,
+        crate::util::logger::PrintType::Omega,
+        crate::util::logger::LogLevel::Info,
+        "presence.user_disconnected",
+        "request_id={} user_id={} session_id={} omikron_id={}",
+        value.require_id()?,
+        user_id,
+        session_id,
+        omikron_id
+    );
     connection
         .send(&CommunicationValue::new(CommunicationType::Success).with_id(value.require_id()?))
         .await
@@ -404,7 +425,6 @@ pub async fn iota_connected(
     value: CommunicationValue,
     omikron_id: i64,
 ) -> OmikronResult<()> {
-    log_in!(crate::util::logger::PrintType::Omega, "IOTA connected");
     let Some(iota_id) = value
         .get_data(DataType::IotaId)
         .as_number()
@@ -430,6 +450,16 @@ pub async fn iota_connected(
     apply_preferences(&state, user_repo::get_presence_preferences(&ids).await?);
     let before = states_for_users(&state, &users);
     state.presence.connect_iota(iota_id.0, omikron_id);
+    crate::log_event!(
+        omikron_id,
+        crate::util::logger::PrintType::Omega,
+        crate::util::logger::LogLevel::Info,
+        "presence.iota_connected",
+        "request_id={} iota_id={} omikron_id={}",
+        value.require_id()?,
+        iota_id.0,
+        omikron_id
+    );
     let user_ids = users
         .iter()
         .map(|user| DataValue::SignedNumber(user.id.0.into()))
@@ -450,7 +480,6 @@ pub async fn iota_disconnected(
     value: CommunicationValue,
     omikron_id: i64,
 ) -> OmikronResult<()> {
-    log_in!(crate::util::logger::PrintType::Omega, "IOTA disconnected");
     let Some(iota_id) = value
         .get_data(DataType::IotaId)
         .as_number()
@@ -468,6 +497,16 @@ pub async fn iota_disconnected(
         .filter_map(|(user_id, _, route)| (route.iota_id == iota_id).then_some(user_id))
         .collect::<HashSet<_>>();
     state.presence.untrack_iota_connection(iota_id, omikron_id);
+    crate::log_event!(
+        omikron_id,
+        crate::util::logger::PrintType::Omega,
+        crate::util::logger::LogLevel::Info,
+        "presence.iota_disconnected",
+        "request_id={} iota_id={} omikron_id={}",
+        value.require_id()?,
+        iota_id,
+        omikron_id
+    );
     publish_route_removal(
         &state,
         &removed_session_user_ids.iter().copied().collect::<Vec<_>>(),

@@ -1,7 +1,13 @@
 use super::super::connection::{
     OmikronConnection, OmikronResult, OptionalDataValueCompat, RequiredMtpFields,
 };
-use crate::{db::invitation_repo, error::OmegaError, models::IotaId};
+use crate::{
+    db::invitation_repo,
+    error::OmegaError,
+    log_event,
+    models::IotaId,
+    util::logger::{LogLevel, PrintType},
+};
 use mtp::{
     codec::{CommunicationType, CommunicationValue, DataType, DataValue, TypeMap},
     crypto::PublicKeyBundle,
@@ -14,6 +20,12 @@ pub async fn manage(
 ) -> OmikronResult<()> {
     let request_id = value.require_id()?;
     let iota_id = IotaId::from(value.require_sender_i64()?);
+    let operation = match value.get_comm_type_enum() {
+        Some(CommunicationType::CreateUserInvitation) => "create",
+        Some(CommunicationType::ListUserInvitations) => "list",
+        Some(CommunicationType::RevokeUserInvitation) => "revoke",
+        _ => "unknown",
+    };
     let authority_value = value.get_data(DataType::InvitationAuthority);
     let authority = authority_value.as_str().unwrap_or("omega");
     if authority != "omega" {
@@ -38,6 +50,17 @@ pub async fn manage(
     match result {
         Ok(response) => connection.send(&response.with_id(request_id)).await,
         Err(error) => {
+            log_event!(
+                connection.id_i64(),
+                PrintType::Omega,
+                LogLevel::Warn,
+                "invitation.operation_failed",
+                "request_id={} iota_id={} operation={} error={}",
+                request_id,
+                iota_id.0,
+                operation,
+                error
+            );
             let kind = match error {
                 OmegaError::NotFound => CommunicationType::ErrorNotFound,
                 OmegaError::AuthenticationFailed | OmegaError::NotAuthenticated => {
@@ -108,6 +131,20 @@ pub async fn redeem(
     };
     match result {
         Ok(result) => {
+            if value.is_type(CommunicationType::RedeemUserInvitation) {
+                log_event!(
+                    connection.id_i64(),
+                    PrintType::Omega,
+                    LogLevel::Info,
+                    "invitation.redeemed",
+                    "request_id={} invitation_id={} iota_id={} user_id={} state={}",
+                    request_id,
+                    result.invitation_id,
+                    result.iota_id.0,
+                    result.user_id.0,
+                    result.state.as_str()
+                );
+            }
             if result.state == invitation_repo::InvitationState::Provisioning {
                 crate::transport::omikron_manager::deliver_pending_user_provisioning(
                     &connection.state(),
@@ -176,6 +213,16 @@ async fn create(
         value.get_data(DataType::InvitationLabel).as_str(),
     )
     .await?;
+    log_event!(
+        0,
+        PrintType::Omega,
+        LogLevel::Info,
+        "invitation.created",
+        "iota_id={} invitation_id={} expires_at_ms={}",
+        iota_id.0,
+        created.invitation_id,
+        created.expires_at_ms
+    );
     Ok(
         CommunicationValue::new(CommunicationType::CreateUserInvitation)
             .add_typed_default(
@@ -271,6 +318,17 @@ async fn revoke(
     let invitation_id = signed_i64(value, DataType::InvitationId)
         .ok_or_else(|| OmegaError::Validation("missing invitation ID".into()))?;
     let result = invitation_repo::revoke(invitation_id, iota_id).await?;
+    if result.applied {
+        log_event!(
+            0,
+            PrintType::Omega,
+            LogLevel::Info,
+            "invitation.revoked",
+            "iota_id={} invitation_id={}",
+            iota_id.0,
+            invitation_id
+        );
+    }
     crate::transport::omikron_manager::deliver_pending_erasures(state, iota_id.0).await;
     Ok(CommunicationValue::new(CommunicationType::Success)
         .add_typed_default(
