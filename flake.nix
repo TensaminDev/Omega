@@ -66,8 +66,6 @@
                 cp -R ${inputs.iota}/iota-identity ./iota-identity
                 substituteInPlace Cargo.toml \
                   --replace-fail 'path = "../iota/iota-identity"' 'path = "./iota-identity"'
-                substituteInPlace iota-identity/Cargo.toml \
-                  --replace-fail 'bb0f682b735de5ebb36bb41dc699260578341828' '1f19a0d897c265d1e3f590a876f95e766ff99318'
               '';
               cargoLock = {
                 lockFile = ./Cargo.lock;
