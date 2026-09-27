@@ -36,6 +36,7 @@ fn route_name(parts: &[&str]) -> &'static str {
         ["direct", ..] => "/direct/:short",
         ["api", "get", "id", _] => "/api/get/id/:username",
         ["api", "get", "iota", _] => "/api/get/iota/:id",
+        ["api", "get", "iota", _, "omikron"] => "/api/get/iota/:id/omikron",
         ["api", "get", "omikron", _] => "/api/get/omikron/:id",
         ["api", "get", "registration-omikron", _] => "/api/get/registration-omikron/:id",
         ["federation", "v1", "users", "id", _] => "/federation/v1/users/id/:id",
@@ -71,6 +72,40 @@ fn user_response(user: crate::models::User) -> Result<UserResponse> {
         avatar: user
             .avatar
             .map(|value| base64::engine::general_purpose::STANDARD.encode(value)),
+    })
+}
+
+fn account_principal(identity: &OmegaIdentity, user_id: i64) -> Result<String> {
+    if user_id <= 0 {
+        return Err(OmegaError::Validation("invalid user ID".into()));
+    }
+    let authority = iota_identity::AuthorityId::for_omega(&identity.public_key_bundle())
+        .map_err(|error| OmegaError::Validation(error.to_string()))?;
+    Ok(format!("{}#{user_id}", authority.as_str()))
+}
+
+async fn omikron_for_iota(state: &OmegaState, iota_id: i64) -> Result<OmikronResponse> {
+    get_iota_by_id(IotaId::from(iota_id)).await?;
+    let omikron_id = if let Some(primary) = get_iota_primary_omikron_connection(state, iota_id) {
+        primary
+    } else {
+        get_random_omikron(state)
+            .await
+            .map_err(|_| OmegaError::NotFound)?
+            .get_omikron_id()
+            .await
+            .ok_or(OmegaError::NotFound)?
+    };
+    state
+        .connected_omikron(omikron_id)
+        .ok_or(OmegaError::NotFound)?;
+    let omikron = get_omikron_by_id(omikron_id.into()).await?;
+    Ok(OmikronResponse {
+        status: "success",
+        id: omikron.id.0,
+        public_key: omikron.public_key.try_to_base64()?,
+        ip_address: omikron.ip_address,
+        port: omikron.port,
     })
 }
 
@@ -254,33 +289,13 @@ async fn route(
                 }),
             ))
         }
-        ["api", "get", "registration-omikron", id] => {
+        ["api", "get", "iota", id, "omikron"] | ["api", "get", "registration-omikron", id]
+            if method == Method::GET =>
+        {
             let iota_id = parse_positive_id(id)?;
-            get_iota_by_id(IotaId::from(iota_id)).await?;
-            let omikron_id =
-                if let Some(primary) = get_iota_primary_omikron_connection(state, iota_id) {
-                    primary
-                } else {
-                    get_random_omikron(state)
-                        .await
-                        .map_err(|_| OmegaError::NotFound)?
-                        .get_omikron_id()
-                        .await
-                        .ok_or(OmegaError::NotFound)?
-                };
-            state
-                .connected_omikron(omikron_id)
-                .ok_or(OmegaError::NotFound)?;
-            let omikron = get_omikron_by_id(omikron_id.into()).await?;
             Ok((
                 StatusCode::OK,
-                json(&OmikronResponse {
-                    status: "success",
-                    id: omikron.id.0,
-                    public_key: omikron.public_key.try_to_base64()?,
-                    ip_address: omikron.ip_address,
-                    port: omikron.port,
-                }),
+                json(&omikron_for_iota(state, iota_id).await?),
             ))
         }
         ["api", "get", "iota", id] => {
@@ -304,6 +319,7 @@ async fn route(
                     status: "success",
                     username: user.username,
                     public_key: user.public_key.try_to_base64()?,
+                    principal: account_principal(identity, user.id.0)?,
                     user_id: user.id.0,
                     iota_id: user.iota_id.map(|id| id.0),
                 }),
@@ -543,5 +559,28 @@ mod tests {
             iota_identity::PrincipalHome::Iota(iota.node_id().clone())
         );
         assert_eq!(wire.home_node.unwrap().revision, 4);
+    }
+
+    #[test]
+    fn public_account_principal_uses_omega_key_identity() {
+        let omega = OmegaIdentity::from_keyring(Keyring::generate());
+        let authority = iota_identity::AuthorityId::for_omega(&omega.public_key_bundle()).unwrap();
+        assert_eq!(
+            account_principal(&omega, 7).unwrap(),
+            format!("{}#7", authority.as_str())
+        );
+        assert!(account_principal(&omega, 0).is_err());
+    }
+
+    #[test]
+    fn iota_omikron_discovery_has_an_explicit_route() {
+        assert_eq!(
+            route_name(&["api", "get", "iota", "7", "omikron"]),
+            "/api/get/iota/:id/omikron"
+        );
+        assert_eq!(
+            route_name(&["api", "get", "registration-omikron", "7"]),
+            "/api/get/registration-omikron/:id"
+        );
     }
 }

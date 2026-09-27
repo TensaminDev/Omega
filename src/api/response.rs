@@ -45,6 +45,7 @@ pub struct UsernameResponse {
     pub public_key: String,
     pub user_id: i64,
     pub iota_id: Option<i64>,
+    pub principal: String,
 }
 
 #[derive(Serialize)]

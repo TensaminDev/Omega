@@ -37,11 +37,11 @@
     "mtp-type-maps": {
       "flake": false,
       "locked": {
-        "lastModified": 1789843665,
-        "narHash": "sha256-dU7z909w1R6OAVHLf6DsNWDQxx2SDiHj3w7574a7MsA=",
+        "lastModified": 1790546862,
+        "narHash": "sha256-yiy2GXDR6QwNiUTT+L4mZaPmqQygt1BfmLf/WRSW7MY=",
         "ref": "refs/heads/main",
-        "rev": "c1937a37393907bf610ac4f6ba303f19d3071f9b",
-        "revCount": 24,
+        "rev": "b996bb8afbc54391e38c03a92e6226d43aa8ecf8",
+        "revCount": 26,
         "type": "git",
         "url": "https://git.methanium.net/tensamin/mtp-type-maps"
       },

@@ -79,6 +79,15 @@ pub async fn get_user(
         )
         .add_typed_default(DataType::UserId, DataValue::SignedNumber(id.into()))
         .add_typed_default(
+            DataType::Principal,
+            DataValue::Str(format!(
+                "{}#{id}",
+                iota_identity::AuthorityId::for_omega(&state.identity.public_key_bundle())
+                    .map_err(|error| OmegaError::Validation(error.to_string()))?
+                    .as_str()
+            )),
+        )
+        .add_typed_default(
             DataType::CreatedAt,
             DataValue::SignedNumber(user.created_at.into()),
         )
