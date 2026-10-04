@@ -682,27 +682,6 @@ impl PresenceTracker {
         Self::debug_assert_indices(&routes);
         empty
     }
-
-    pub fn all_iota_routes(&self) -> HashMap<i64, IotaRoute> {
-        self.routes.read().iotas.clone()
-    }
-
-    pub fn connection_routes(&self) -> HashMap<i64, HashMap<i64, Vec<i64>>> {
-        let mut result: std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>> =
-            std::collections::HashMap::new();
-
-        let iotas = self.all_iota_routes();
-        for (iota_id, route) in &iotas {
-            for omikron_id in &route.connected_omikron_ids {
-                result
-                    .entry(*omikron_id)
-                    .or_default()
-                    .entry(*iota_id)
-                    .or_default();
-            }
-        }
-        result
-    }
 }
 
 #[cfg(test)]

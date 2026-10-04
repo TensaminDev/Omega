@@ -33,44 +33,6 @@ pub fn get_iota_primary_omikron_connection(state: &OmegaState, iota_id: i64) -> 
     state.presence.primary_iota_route(iota_id)
 }
 
-pub async fn get_all_connections(
-    state: &OmegaState,
-) -> Result<std::collections::HashMap<i64, std::collections::HashMap<i64, Vec<i64>>>, ()> {
-    let mut result = state.presence.connection_routes();
-    let iota_ids = state
-        .presence
-        .all_iota_routes()
-        .keys()
-        .copied()
-        .collect::<Vec<_>>();
-    let users = user_repo::get_users_by_iota_ids(&iota_ids)
-        .await
-        .map_err(|_| ())?;
-    for user in users {
-        if let Some(iota_id) = user.iota_id {
-            for omikron_id in state
-                .presence
-                .iota_connections(iota_id.0)
-                .unwrap_or_default()
-            {
-                if let Some(users) = result
-                    .get_mut(&omikron_id)
-                    .and_then(|iotas| iotas.get_mut(&iota_id.0))
-                {
-                    users.push(user.id.0);
-                }
-            }
-        }
-    }
-    for iotas in result.values_mut() {
-        for users in iotas.values_mut() {
-            users.sort_unstable();
-            users.dedup();
-        }
-    }
-    Ok(result)
-}
-
 pub async fn send_state_batch(
     state: &OmegaState,
     omikron_id: i64,

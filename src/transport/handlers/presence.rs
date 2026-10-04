@@ -443,7 +443,7 @@ pub async fn iota_connected(
                 .send_error_response(value.require_id()?, CommunicationType::ErrorNotFound)
                 .await;
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     }
     let users = user_repo::get_users_by_iota_id(iota_id).await?;
     let ids = users.iter().map(|user| user.id.0).collect::<Vec<_>>();

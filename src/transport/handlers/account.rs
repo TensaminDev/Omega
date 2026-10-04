@@ -50,20 +50,20 @@ pub async fn iota(
                 .without_id()
                 .add_typed_default(DataType::IotaId, DataValue::SignedNumber(iota_id.into()));
             for omikron_id in omikron_ids {
-                if let Some(target) = connection.state().connected_omikron(omikron_id) {
-                    if let Err(error) = target.send_message(&invalidation).await {
-                        log_event!(
-                            connection.id_i64(),
-                            PrintType::Omega,
-                            LogLevel::Warn,
-                            "account.invalidation_delivery_failed",
-                            "request_id={} iota_id={} target_omikron_id={} error={}",
-                            request_id,
-                            iota_id,
-                            omikron_id,
-                            error
-                        );
-                    }
+                if let Some(target) = connection.state().connected_omikron(omikron_id)
+                    && let Err(error) = target.send_message(&invalidation).await
+                {
+                    log_event!(
+                        connection.id_i64(),
+                        PrintType::Omega,
+                        LogLevel::Warn,
+                        "account.invalidation_delivery_failed",
+                        "request_id={} iota_id={} target_omikron_id={} error={}",
+                        request_id,
+                        iota_id,
+                        omikron_id,
+                        error
+                    );
                 }
             }
             response_result
@@ -143,25 +143,24 @@ pub async fn release_from_iota(
                 user_id,
                 requester.0
             );
-            if let Some(iota) = previous_iota {
-                if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
+            if let Some(iota) = previous_iota
+                && let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                     &connection.state(),
                     iota.0,
                 )
                 .await
-                {
-                    log_event!(
-                        connection.id_i64(),
-                        PrintType::Omega,
-                        LogLevel::Warn,
-                        "account.snapshot_publish_failed",
-                        "request_id={} user_id={} iota_id={} error={}",
-                        value.require_id()?,
-                        user_id,
-                        iota.0,
-                        error
-                    );
-                }
+            {
+                log_event!(
+                    connection.id_i64(),
+                    PrintType::Omega,
+                    LogLevel::Warn,
+                    "account.snapshot_publish_failed",
+                    "request_id={} user_id={} iota_id={} error={}",
+                    value.require_id()?,
+                    user_id,
+                    iota.0,
+                    error
+                );
             }
             connection
                 .send(
@@ -317,25 +316,24 @@ pub async fn attach_complete(
                 user_id,
                 requester
             );
-            if let Some(iota) = previous_iota.filter(|id| id.0 != requester) {
-                if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
+            if let Some(iota) = previous_iota.filter(|id| id.0 != requester)
+                && let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                     &connection.state(),
                     iota.0,
                 )
                 .await
-                {
-                    log_event!(
-                        connection.id_i64(),
-                        PrintType::Omega,
-                        LogLevel::Warn,
-                        "account.snapshot_publish_failed",
-                        "request_id={} user_id={} iota_id={} error={}",
-                        value.require_id()?,
-                        user_id,
-                        iota.0,
-                        error
-                    );
-                }
+            {
+                log_event!(
+                    connection.id_i64(),
+                    PrintType::Omega,
+                    LogLevel::Warn,
+                    "account.snapshot_publish_failed",
+                    "request_id={} user_id={} iota_id={} error={}",
+                    value.require_id()?,
+                    user_id,
+                    iota.0,
+                    error
+                );
             }
             if let Err(error) = crate::transport::omikron_manager::publish_iota_user_snapshot(
                 &connection.state(),
@@ -447,20 +445,20 @@ async fn complete_delete(
                 .without_id()
                 .add_typed_default(DataType::UserId, DataValue::SignedNumber(user_id.0.into()));
             for omikron_id in target_omikrons {
-                if let Some(target) = connection.state().connected_omikron(omikron_id) {
-                    if let Err(error) = target.send_message(&invalidation).await {
-                        log_event!(
-                            connection.id_i64(),
-                            PrintType::Omega,
-                            LogLevel::Warn,
-                            "account.invalidation_delivery_failed",
-                            "request_id={} user_id={} target_omikron_id={} error={}",
-                            value.require_id()?,
-                            user_id.0,
-                            omikron_id,
-                            error
-                        );
-                    }
+                if let Some(target) = connection.state().connected_omikron(omikron_id)
+                    && let Err(error) = target.send_message(&invalidation).await
+                {
+                    log_event!(
+                        connection.id_i64(),
+                        PrintType::Omega,
+                        LogLevel::Warn,
+                        "account.invalidation_delivery_failed",
+                        "request_id={} user_id={} target_omikron_id={} error={}",
+                        value.require_id()?,
+                        user_id.0,
+                        omikron_id,
+                        error
+                    );
                 }
             }
             response_result

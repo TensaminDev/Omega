@@ -554,6 +554,35 @@ fn format_data_container(data: &[(DataTypeId, DataValue)], type_map: &TypeMap) -
         .join(", ")
 }
 
+#[macro_export]
+macro_rules! log_cv {
+    ($kind:expr, $cv:expr) => {
+        $crate::util::logger::log_cv_internal("", &$cv, Some($kind))
+    };
+    ($cv:expr) => {
+        $crate::util::logger::log_cv_internal("", &$cv, None)
+    };
+}
+
+#[macro_export]
+macro_rules! log_cv_in {
+    ($kind:expr, $cv:expr) => {
+        $crate::util::logger::log_cv_internal("> ", &$cv, Some($kind))
+    };
+    ($cv:expr) => {
+        $crate::util::logger::log_cv_internal("> ", &$cv, None)
+    };
+}
+#[macro_export]
+macro_rules! log_cv_out {
+    ($kind:expr, $cv:expr) => {
+        $crate::util::logger::log_cv_internal("< ", &$cv, Some($kind))
+    };
+    ($cv:expr) => {
+        $crate::util::logger::log_cv_internal("< ", &$cv, None)
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LogLevel, LogMessage, PrintType, format_cv, write_message};
@@ -603,33 +632,4 @@ mod tests {
         assert!(contents.contains("event=account.failed"));
         assert!(contents.contains("first\\nsecond"));
     }
-}
-
-#[macro_export]
-macro_rules! log_cv {
-    ($kind:expr, $cv:expr) => {
-        $crate::util::logger::log_cv_internal("", &$cv, Some($kind))
-    };
-    ($cv:expr) => {
-        $crate::util::logger::log_cv_internal("", &$cv, None)
-    };
-}
-
-#[macro_export]
-macro_rules! log_cv_in {
-    ($kind:expr, $cv:expr) => {
-        $crate::util::logger::log_cv_internal("> ", &$cv, Some($kind))
-    };
-    ($cv:expr) => {
-        $crate::util::logger::log_cv_internal("> ", &$cv, None)
-    };
-}
-#[macro_export]
-macro_rules! log_cv_out {
-    ($kind:expr, $cv:expr) => {
-        $crate::util::logger::log_cv_internal("< ", &$cv, Some($kind))
-    };
-    ($cv:expr) => {
-        $crate::util::logger::log_cv_internal("< ", &$cv, None)
-    };
 }
