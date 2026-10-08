@@ -8,7 +8,7 @@ use crate::{
         RequiredMtpFields, validate_dispatch_fields, validate_dispatch_sender,
     },
     transport::omikron_manager,
-    util::{file_util::load_file_vec, logger::PrintType},
+    util::logger::PrintType,
 };
 use dashmap::{DashMap, mapref::entry::Entry};
 use mtp::{
@@ -813,8 +813,12 @@ pub async fn start(
     state: Arc<OmegaState>,
     shutdown: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let cert_pem = load_file_vec("certs", "cert.pem")?;
-    let key_pem = load_file_vec("certs", "key.pem")?;
+    let cert_file = std::env::var("TLS_CERT_FILE").unwrap_or_else(|_| "certs/cert.pem".into());
+    let cert_pem = std::fs::read(&cert_file)
+        .map_err(|error| format!("load TLS certificate {cert_file}: {error}"))?;
+    let key_file = std::env::var("TLS_KEY_FILE").unwrap_or_else(|_| "certs/key.pem".into());
+    let key_pem = std::fs::read(&key_file)
+        .map_err(|error| format!("load TLS private key {key_file}: {error}"))?;
     let web_config = server::web::build_web_config(state.clone())?
         .serve_tcp_https(true)
         .max_tcp_connections(256);
