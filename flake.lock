@@ -3,18 +3,18 @@
     "iota": {
       "flake": false,
       "locked": {
-        "lastModified": 1791141275,
-        "narHash": "sha256-jtoeOgev70umEJD2RhPJGpJD0A8X8sG/sWbdpwO5/kU=",
-        "ref": "main",
-        "rev": "976ffde7a86b2f3f9884035b2a3a9ffb9aefe501",
-        "revCount": 329,
-        "type": "git",
-        "url": "ssh://git@methanium.net/tensamin/iota"
+        "lastModified": 1791987428,
+        "narHash": "sha256-411kb8uMzPo1tn+vy4AM0wU6z4OTjTM+vNyNAHKbIV0=",
+        "owner": "TensaminDev",
+        "repo": "Iota",
+        "rev": "c78116ce273983260f929dbac1f009914e34c856",
+        "type": "github"
       },
       "original": {
+        "owner": "TensaminDev",
         "ref": "main",
-        "type": "git",
-        "url": "ssh://git@methanium.net/tensamin/iota"
+        "repo": "Iota",
+        "type": "github"
       }
     },
     "nixpkgs": {
@@ -66,16 +66,16 @@
       "locked": {
         "lastModified": 1790572556,
         "narHash": "sha256-ugNZR2Be9N9UjG0aVN8Yrk4hYOVC2edjtC9xBhbW35w=",
-        "ref": "main",
+        "owner": "TensaminDev",
+        "repo": "MTP-Type-Maps",
         "rev": "4f18c7a0d9b04d38a77fbb011c4f0b21c25bf7bf",
-        "revCount": 28,
-        "type": "git",
-        "url": "ssh://git@methanium.net/tensamin/mtp-type-maps"
+        "type": "github"
       },
       "original": {
+        "owner": "TensaminDev",
         "ref": "main",
-        "type": "git",
-        "url": "ssh://git@methanium.net/tensamin/mtp-type-maps"
+        "repo": "MTP-Type-Maps",
+        "type": "github"
       }
     }
   },

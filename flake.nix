@@ -7,11 +7,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     type-maps = {
-      url = "git+ssh://git@methanium.net/tensamin/mtp-type-maps?ref=main";
+      url = "github:TensaminDev/MTP-Type-Maps/main";
       flake = false;
     };
     iota = {
-      url = "git+ssh://git@methanium.net/tensamin/iota?ref=main";
+      url = "github:TensaminDev/Iota/main";
       flake = false;
     };
   };
@@ -125,7 +125,7 @@
               pname = "omega";
               version = "0.1.0";
               src = source;
-              hash = "sha256-aTRNBKgSfwNGp/TeiFy3ZITPR/i+aPScXsVRwS2kdWo=";
+              hash = "sha256-jkhjSxmeRkqUc+Y06ZM10i/X2I4l/E9erbIXejwWVnc=";
             };
           };
           container = self.lib.mkContainer {
