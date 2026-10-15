@@ -114,6 +114,9 @@
             rm -rf "$out/mtp-type-maps"
             cp -r ${type-maps} "$out/mtp-type-maps"
             cp -r ${iota}/iota-identity "$out/iota-identity"
+            # Normalize the identity subcrate without advancing its pinned revision.
+            substituteInPlace "$out/iota-identity/Cargo.toml" \
+              --replace-quiet 'https://github.com/MethaniumDev/MTP.git' 'https://github.com/nonanium/MTP.git'
             substituteInPlace "$out/Cargo.toml" --replace-fail '../iota/iota-identity' './iota-identity'
           '';
         in
@@ -125,7 +128,7 @@
               pname = "omega";
               version = "0.1.0";
               src = source;
-              hash = "sha256-jkhjSxmeRkqUc+Y06ZM10i/X2I4l/E9erbIXejwWVnc=";
+              hash = "sha256-fCupetPvaWZGIMk5l5mczyabFz2W9gXtt/4oIC3yX6E=";
             };
           };
           container = self.lib.mkContainer {
